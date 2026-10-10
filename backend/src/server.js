@@ -83,7 +83,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
     }
 
-    const user = await queryGet('SELECT * FROM users WHERE username = ?', [username]);
+    const user = await queryGet('SELECT * FROM users WHERE username = $1', [username]);
 
     if (!user || !comparePassword(password, user.password_hash)) {
       return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
@@ -299,7 +299,7 @@ app.get('/api/trips', authenticateToken, async (req, res) => {
     const trips = await query(sql, params);
 
     // Get total count for pagination
-    let countQuery = 'SELECT COUNT(*) as total FROM trips';
+    let countQuery = 'SELECT COUNT(*) as total FROM trips t';
     if (conditions.length > 0) {
       countQuery += ' WHERE ' + conditions.join(' AND ');
     }
