@@ -1,7 +1,12 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const db = require('./database');
+
+// Use PostgreSQL in production, SQLite in development
+const db = process.env.NODE_ENV === 'production' 
+  ? require('./database-pg') 
+  : require('./database');
+
 const { hashPassword, comparePassword, generateToken, authenticateToken } = require('./auth');
 
 const app = express();

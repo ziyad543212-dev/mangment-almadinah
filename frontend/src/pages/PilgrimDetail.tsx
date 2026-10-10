@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../services/api';
-import type { Pilgrim, Payment, CashDenomination } from '../types';
+import type { Pilgrim } from '../types';
 
 const CASH_DENOMINATIONS = [1, 5, 10, 20, 50, 100];
 

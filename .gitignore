@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.env.local
+.env.production
+*.sqlite
+.DS_Store
+Thumbs.db
+temp_extract
+electron.js
+preload.js
+package.json
+package-lock.json
+start-app.bat

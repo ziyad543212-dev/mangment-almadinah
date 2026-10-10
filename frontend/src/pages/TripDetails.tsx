@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import api from '../services/api';
-import type { Trip, Pilgrim } from '../types';
+import type { Trip } from '../types';
 
 function TripDetails() {
   const { id } = useParams<{ id: string }>();
@@ -250,7 +250,7 @@ function TripDetails() {
             style={{
               fontSize: '2rem',
               fontWeight: '700',
-              color: (trip.net_trip || 0) >= 0 ? '#17a2b8' : '#dc3545',
+              color: ((trip.net_trip ?? 0) || 0) >= 0 ? '#17a2b8' : '#dc3545',
               margin: 0,
             }}
           >

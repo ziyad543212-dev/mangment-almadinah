@@ -255,8 +255,8 @@ function Trips() {
                     <td style={{ fontWeight: '600', color: '#dc3545' }}>
                       ${trip.total_outstanding?.toFixed(2) || 0}
                     </td>
-                    <td style={{ fontWeight: '600', color: trip.net_trip >= 0 ? '#17a2b8' : '#dc3545' }}>
-                      ${trip.net_trip?.toFixed(2) || 0}
+                    <td style={{ fontWeight: '600', color: (trip.net_trip ?? 0) >= 0 ? '#17a2b8' : '#dc3545' }}>
+                      ${(trip.net_trip ?? 0)?.toFixed(2) || 0}
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
