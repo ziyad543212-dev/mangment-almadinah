@@ -15,20 +15,75 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// Helper function to convert callback-based queries to promises
+function query(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    if (process.env.NODE_ENV === 'production') {
+      // PostgreSQL - use pool.query directly
+      db.pool.query(sql, params)
+        .then(result => resolve(result.rows))
+        .catch(reject);
+    } else {
+      // SQLite - use callback
+      db.all(sql, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    }
+  });
+}
+
+function queryGet(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    if (process.env.NODE_ENV === 'production') {
+      // PostgreSQL
+      db.pool.query(sql, params)
+        .then(result => resolve(result.rows[0]))
+        .catch(reject);
+    } else {
+      // SQLite
+      db.get(sql, params, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    }
+  });
+}
+
+function queryRun(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    if (process.env.NODE_ENV === 'production') {
+      // PostgreSQL
+      db.pool.query(sql, params)
+        .then(result => {
+          resolve({
+            lastID: result.rows[0]?.id,
+            changes: result.rowCount
+          });
+        })
+        .catch(reject);
+    } else {
+      // SQLite
+      db.run(sql, params, function(err) {
+        if (err) reject(err);
+        else resolve({ lastID: this.lastID, changes: this.changes });
+      });
+    }
+  });
+}
+
 // ===== AUTH ENDPOINTS =====
 
 // Login
-app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
 
-  if (!username || !password) {
-    return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
-  }
-
-  db.get('SELECT * FROM users WHERE username = ?', [username], (err, user) => {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
+    if (!username || !password) {
+      return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
     }
+
+    const user = await queryGet('SELECT * FROM users WHERE username = ?', [username]);
 
     if (!user || !comparePassword(password, user.password_hash)) {
       return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
@@ -43,37 +98,40 @@ app.post('/api/auth/login', (req, res) => {
         role: user.role
       }
     });
-  });
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Create initial admin user (should be called once)
-app.post('/api/auth/setup-admin', (req, res) => {
-  const { username, password } = req.body;
+app.post('/api/auth/setup-admin', async (req, res) => {
+  try {
+    const { username, password } = req.body;
 
-  if (!username || !password) {
-    return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
-  }
-
-  if (password.length < 6) {
-    return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
-  }
-
-  const passwordHash = hashPassword(password);
-
-  db.run(
-    'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-    [username, passwordHash, 'admin'],
-    function(err) {
-      if (err) {
-        if (err.message.includes('UNIQUE')) {
-          return res.status(400).json({ error: 'اسم المستخدم موجود بالفعل' });
-        }
-        return res.status(500).json({ error: 'خطأ في الخادم' });
-      }
-
-      res.json({ message: 'تم إنشاء حساب المسؤول بنجاح', userId: this.lastID });
+    if (!username || !password) {
+      return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
     }
-  );
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
+    }
+
+    const passwordHash = hashPassword(password);
+
+    const result = await queryRun(
+      'INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id',
+      [username, passwordHash, 'admin']
+    );
+
+    res.json({ message: 'تم إنشاء حساب المسؤول بنجاح', userId: result.lastID });
+  } catch (err) {
+    console.error('Setup admin error:', err);
+    if (err.message && err.message.includes('unique')) {
+      return res.status(400).json({ error: 'اسم المستخدم موجود بالفعل' });
+    }
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Verify token
@@ -82,26 +140,24 @@ app.get('/api/auth/verify', authenticateToken, (req, res) => {
 });
 
 // Change password
-app.post('/api/auth/change-password', authenticateToken, (req, res) => {
-  const { currentPassword, newPassword, confirmPassword } = req.body;
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
 
-  if (!currentPassword || !newPassword || !confirmPassword) {
-    return res.status(400).json({ error: 'جميع الحقول مطلوبة' });
-  }
-
-  if (newPassword !== confirmPassword) {
-    return res.status(400).json({ error: 'كلمة المرور الجديدة غير متطابقة مع التأكيد' });
-  }
-
-  if (newPassword.length < 6) {
-    return res.status(400).json({ error: 'كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل' });
-  }
-
-  // Get current user
-  db.get('SELECT * FROM users WHERE id = ?', [req.user.id], (err, user) => {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({ error: 'جميع الحقول مطلوبة' });
     }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ error: 'كلمة المرور الجديدة غير متطابقة مع التأكيد' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل' });
+    }
+
+    // Get current user
+    const user = await queryGet('SELECT * FROM users WHERE id = $1', [req.user.id]);
 
     if (!user) {
       return res.status(404).json({ error: 'المستخدم غير موجود' });
@@ -116,147 +172,131 @@ app.post('/api/auth/change-password', authenticateToken, (req, res) => {
     const newPasswordHash = hashPassword(newPassword);
 
     // Update password
-    db.run(
-      'UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [newPasswordHash, req.user.id],
-      function(err) {
-        if (err) {
-          return res.status(500).json({ error: 'خطأ في الخادم' });
-        }
-
-        res.json({ message: 'تم تغيير كلمة المرور بنجاح' });
-      }
+    await queryRun(
+      'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [newPasswordHash, req.user.id]
     );
-  });
+
+    res.json({ message: 'تم تغيير كلمة المرور بنجاح' });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // ===== DASHBOARD STATS =====
 
-app.get('/api/dashboard/stats', authenticateToken, (req, res) => {
-  const queries = [
-    'SELECT COUNT(*) as total FROM trips',
-    'SELECT COUNT(*) as total FROM pilgrims',
-    'SELECT COALESCE(SUM(p.amount_usd), 0) as total FROM payments p',
-    'SELECT COUNT(*) as count FROM pilgrims WHERE id IN (SELECT DISTINCT pilgrim_id FROM payments)',
-    'SELECT COUNT(*) as count FROM pilgrims WHERE id NOT IN (SELECT DISTINCT pilgrim_id FROM payments)',
-    'SELECT COUNT(*) as count FROM trips WHERE trip_date >= DATE("now")',
-    'SELECT COUNT(*) as count FROM trips WHERE trip_date < DATE("now")'
-  ];
+app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
+  try {
+    const queries = [
+      'SELECT COUNT(*) as total FROM trips',
+      'SELECT COUNT(*) as total FROM pilgrims',
+      'SELECT COALESCE(SUM(p.amount_usd), 0) as total FROM payments p',
+      'SELECT COUNT(*) as count FROM pilgrims WHERE id IN (SELECT DISTINCT pilgrim_id FROM payments)',
+      'SELECT COUNT(*) as count FROM pilgrims WHERE id NOT IN (SELECT DISTINCT pilgrim_id FROM payments)',
+      'SELECT COUNT(*) as count FROM trips WHERE trip_date >= CURRENT_DATE',
+      'SELECT COUNT(*) as count FROM trips WHERE trip_date < CURRENT_DATE'
+    ];
 
-  Promise.all(
-    queries.map(
-      (query) =>
-        new Promise((resolve, reject) => {
-          db.get(query, (err, row) => {
-            if (err) reject(err);
-            else resolve(row);
-          });
-        })
-    )
-  )
-    .then(([totalTrips, totalPilgrims, totalReceived, hasPayments, noPayments, upcomingTrips, previousTrips]) => {
-      // Calculate payment status counts
-      db.all(
-        `
-        SELECT
-          p.id,
-          COALESCE(SUM(pay.amount_usd), 0) as received
-        FROM pilgrims p
-        LEFT JOIN payments pay ON p.id = pay.pilgrim_id
-        GROUP BY p.id
-      `,
-        (err, pilgrimPayments) => {
-          if (err) {
-            return res.status(500).json({ error: 'خطأ في الخادم' });
-          }
+    const [totalTrips, totalPilgrims, totalReceived, hasPayments, noPayments, upcomingTrips, previousTrips] = await Promise.all(
+      queries.map(q => queryGet(q))
+    );
 
-          let fullyPaid = 0;
-          let partiallyPaid = 0;
-          let unpaid = 0;
+    // Calculate payment status counts
+    const pilgrimPayments = await query(`
+      SELECT
+        p.id,
+        COALESCE(SUM(pay.amount_usd), 0) as received
+      FROM pilgrims p
+      LEFT JOIN payments pay ON p.id = pay.pilgrim_id
+      GROUP BY p.id
+    `);
 
-          pilgrimPayments.forEach((pp) => {
-            if (pp.received > 0) {
-              fullyPaid++;
-            } else {
-              unpaid++;
-            }
-          });
+    let fullyPaid = 0;
+    let partiallyPaid = 0;
+    let unpaid = 0;
 
-          res.json({
-            totalTrips: totalTrips.total,
-            totalPilgrims: totalPilgrims.total,
-            totalReceived: totalReceived.total,
-            totalOutstanding: 0,
-            fullyPaid,
-            partiallyPaid,
-            unpaid,
-            upcomingTrips: upcomingTrips.count,
-            previousTrips: previousTrips.count
-          });
-        }
-      );
-    })
-    .catch((err) => res.status(500).json({ error: 'خطأ في الخادم' }));
+    pilgrimPayments.forEach((pp) => {
+      if (pp.received > 0) {
+        fullyPaid++;
+      } else {
+        unpaid++;
+      }
+    });
+
+    res.json({
+      totalTrips: totalTrips.total,
+      totalPilgrims: totalPilgrims.total,
+      totalReceived: totalReceived.total,
+      totalOutstanding: 0,
+      fullyPaid,
+      partiallyPaid,
+      unpaid,
+      upcomingTrips: upcomingTrips.count,
+      previousTrips: previousTrips.count
+    });
+  } catch (err) {
+    console.error('Dashboard stats error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // ===== TRIPS ENDPOINTS =====
 
 // Get all trips
-app.get('/api/trips', authenticateToken, (req, res) => {
-  const { page = 1, limit = 10, search, startDate, endDate, sortBy = 'trip_date', sortOrder = 'DESC' } = req.query;
+app.get('/api/trips', authenticateToken, async (req, res) => {
+  try {
+    const { page = 1, limit = 10, search, startDate, endDate, sortBy = 'trip_date', sortOrder = 'DESC' } = req.query;
 
-  const offset = (page - 1) * limit;
-  let query = `
-    SELECT
-      t.*,
-      COUNT(p.id) as pilgrim_count,
-      COALESCE(SUM(pay.amount_usd), 0) as total_received,
-      COALESCE(t.trip_cost_usd, 0) - COALESCE(SUM(pay.amount_usd), 0) as total_outstanding,
-      COALESCE(SUM(pay.amount_usd), 0) - COALESCE(t.trip_cost_usd, 0) as net_trip
-    FROM trips t
-    LEFT JOIN pilgrims p ON t.id = p.trip_id
-    LEFT JOIN payments pay ON p.id = pay.pilgrim_id
-  `;
-  const params = [];
-  const conditions = [];
+    const offset = (page - 1) * limit;
+    let sql = `
+      SELECT
+        t.*,
+        COUNT(p.id) as pilgrim_count,
+        COALESCE(SUM(pay.amount_usd), 0) as total_received,
+        COALESCE(t.trip_cost_usd, 0) - COALESCE(SUM(pay.amount_usd), 0) as total_outstanding,
+        COALESCE(SUM(pay.amount_usd), 0) - COALESCE(t.trip_cost_usd, 0) as net_trip
+      FROM trips t
+      LEFT JOIN pilgrims p ON t.id = p.trip_id
+      LEFT JOIN payments pay ON p.id = pay.pilgrim_id
+    `;
+    const params = [];
+    const conditions = [];
 
-  // Search
-  if (search) {
-    conditions.push('t.name LIKE ?');
-    params.push(`%${search}%`);
-  }
-
-  // Date filter
-  if (startDate) {
-    conditions.push('t.trip_date >= ?');
-    params.push(startDate);
-  }
-
-  if (endDate) {
-    conditions.push('t.trip_date <= ?');
-    params.push(endDate);
-  }
-
-  if (conditions.length > 0) {
-    query += ' WHERE ' + conditions.join(' AND ');
-  }
-
-  query += ' GROUP BY t.id';
-
-  // Sorting
-  const allowedSortFields = ['name', 'trip_date', 'created_at'];
-  const sortField = allowedSortFields.includes(sortBy) ? sortBy : 'trip_date';
-  const sortDirection = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-  query += ` ORDER BY ${sortField} ${sortDirection}`;
-
-  // Pagination
-  query += ' LIMIT ? OFFSET ?';
-  params.push(parseInt(limit), offset);
-
-  db.all(query, params, (err, trips) => {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
+    // Search
+    if (search) {
+      conditions.push('t.name LIKE $1');
+      params.push(`%${search}%`);
     }
+
+    // Date filter
+    if (startDate) {
+      conditions.push('t.trip_date >= $' + (params.length + 1));
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      conditions.push('t.trip_date <= $' + (params.length + 1));
+      params.push(endDate);
+    }
+
+    if (conditions.length > 0) {
+      sql += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    sql += ' GROUP BY t.id';
+
+    // Sorting
+    const allowedSortFields = ['name', 'trip_date', 'created_at'];
+    const sortField = allowedSortFields.includes(sortBy) ? sortBy : 'trip_date';
+    const sortDirection = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    sql += ` ORDER BY ${sortField} ${sortDirection}`;
+
+    // Pagination
+    sql += ' LIMIT $' + (params.length + 1) + ' OFFSET $' + (params.length + 2);
+    params.push(parseInt(limit), offset);
+
+    const trips = await query(sql, params);
 
     // Get total count for pagination
     let countQuery = 'SELECT COUNT(*) as total FROM trips';
@@ -264,201 +304,194 @@ app.get('/api/trips', authenticateToken, (req, res) => {
       countQuery += ' WHERE ' + conditions.join(' AND ');
     }
 
-    db.get(countQuery, params.slice(0, -2), (err, countResult) => {
-      if (err) {
-        return res.status(500).json({ error: 'خطأ في الخادم' });
-      }
+    const countResult = await queryGet(countQuery, params.slice(0, -2));
 
-      res.json({
-        trips,
-        pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total: countResult.total,
-          totalPages: Math.ceil(countResult.total / limit)
-        }
-      });
+    res.json({
+      trips,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult.total,
+        totalPages: Math.ceil(countResult.total / limit)
+      }
     });
-  });
+  } catch (err) {
+    console.error('Get trips error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Get single trip
-app.get('/api/trips/:id', authenticateToken, (req, res) => {
-  const { id } = req.params;
+app.get('/api/trips/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
 
-  db.get('SELECT * FROM trips WHERE id = ?', [id], (err, trip) => {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
-    }
+    const trip = await queryGet('SELECT * FROM trips WHERE id = $1', [id]);
 
     if (!trip) {
       return res.status(404).json({ error: 'الرحلة غير موجودة' });
     }
 
     // Get pilgrims for this trip
-    db.all(
-      `SELECT
+    const pilgrims = await query(`
+      SELECT
         p.*,
         COALESCE(SUM(pay.amount_usd), 0) as total_received,
         COUNT(pay.id) as payment_count
       FROM pilgrims p
       LEFT JOIN payments pay ON p.id = pay.pilgrim_id
-      WHERE p.trip_id = ?
-      GROUP BY p.id`,
-      [id],
-      (err, pilgrims) => {
-        if (err) {
-          return res.status(500).json({ error: 'خطأ في الخادم' });
-        }
+      WHERE p.trip_id = $1
+      GROUP BY p.id
+    `, [id]);
 
-        const totalReceived = pilgrims.reduce((sum, p) => sum + (p.total_received || 0), 0);
-        const tripCost = trip.trip_cost_usd || 0;
-        const totalOutstanding = Math.max(0, tripCost - totalReceived);
-        const netTrip = totalReceived - tripCost;
+    const totalReceived = pilgrims.reduce((sum, p) => sum + (p.total_received || 0), 0);
+    const tripCost = trip.trip_cost_usd || 0;
+    const totalOutstanding = Math.max(0, tripCost - totalReceived);
+    const netTrip = totalReceived - tripCost;
 
-        res.json({
-          ...trip,
-          pilgrims: pilgrims.map(p => ({
-            ...p,
-            payment_status: p.total_received > 0 ? 'مدفوع جزئيًا' : 'غير مدفوع'
-          })),
-          total_received: totalReceived,
-          total_outstanding: totalOutstanding,
-          net_trip: netTrip,
-          pilgrim_count: pilgrims.length
-        });
-      }
-    );
-  });
+    res.json({
+      ...trip,
+      pilgrims: pilgrims.map(p => ({
+        ...p,
+        payment_status: p.total_received > 0 ? 'مدفوع جزئيًا' : 'غير مدفوع'
+      })),
+      total_received: totalReceived,
+      total_outstanding: totalOutstanding,
+      net_trip: netTrip,
+      pilgrim_count: pilgrims.length
+    });
+  } catch (err) {
+    console.error('Get trip error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Create trip
-app.post('/api/trips', authenticateToken, (req, res) => {
-  const { name, trip_date, trip_cost_usd, notes } = req.body;
+app.post('/api/trips', authenticateToken, async (req, res) => {
+  try {
+    const { name, trip_date, trip_cost_usd, notes } = req.body;
 
-  if (!name || !trip_date) {
-    return res.status(400).json({ error: 'اسم الرحلة وتاريخ الرحلة مطلوبان' });
-  }
-
-  if (trip_cost_usd !== undefined && trip_cost_usd !== null && trip_cost_usd !== '') {
-    const cost = parseFloat(trip_cost_usd);
-    if (isNaN(cost) || cost < 0) {
-      return res.status(400).json({ error: 'تكلفة الرحلة يجب أن تكون رقماً غير سالب' });
+    if (!name || !trip_date) {
+      return res.status(400).json({ error: 'اسم الرحلة وتاريخ الرحلة مطلوبان' });
     }
-  }
 
-  db.run(
-    'INSERT INTO trips (name, trip_date, trip_cost_usd, notes) VALUES (?, ?, ?, ?)',
-    [name, trip_date, trip_cost_usd || 0, notes || null],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'خطأ في الخادم' });
+    if (trip_cost_usd !== undefined && trip_cost_usd !== null && trip_cost_usd !== '') {
+      const cost = parseFloat(trip_cost_usd);
+      if (isNaN(cost) || cost < 0) {
+        return res.status(400).json({ error: 'تكلفة الرحلة يجب أن تكون رقماً غير سالب' });
       }
-
-      res.status(201).json({ message: 'تمت إضافة الرحلة بنجاح', id: this.lastID });
     }
-  );
+
+    const result = await queryRun(
+      'INSERT INTO trips (name, trip_date, trip_cost_usd, notes) VALUES ($1, $2, $3, $4) RETURNING id',
+      [name, trip_date, trip_cost_usd || 0, notes || null]
+    );
+
+    res.status(201).json({ message: 'تمت إضافة الرحلة بنجاح', id: result.lastID });
+  } catch (err) {
+    console.error('Create trip error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Update trip
-app.put('/api/trips/:id', authenticateToken, (req, res) => {
-  const { id } = req.params;
-  const { name, trip_date, trip_cost_usd, notes } = req.body;
+app.put('/api/trips/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, trip_date, trip_cost_usd, notes } = req.body;
 
-  if (!name || !trip_date) {
-    return res.status(400).json({ error: 'اسم الرحلة وتاريخ الرحلة مطلوبان' });
-  }
-
-  if (trip_cost_usd !== undefined && trip_cost_usd !== null && trip_cost_usd !== '') {
-    const cost = parseFloat(trip_cost_usd);
-    if (isNaN(cost) || cost < 0) {
-      return res.status(400).json({ error: 'تكلفة الرحلة يجب أن تكون رقماً غير سالب' });
+    if (!name || !trip_date) {
+      return res.status(400).json({ error: 'اسم الرحلة وتاريخ الرحلة مطلوبان' });
     }
-  }
 
-  db.run(
-    'UPDATE trips SET name = ?, trip_date = ?, trip_cost_usd = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [name, trip_date, trip_cost_usd || 0, notes || null, id],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'خطأ في الخادم' });
+    if (trip_cost_usd !== undefined && trip_cost_usd !== null && trip_cost_usd !== '') {
+      const cost = parseFloat(trip_cost_usd);
+      if (isNaN(cost) || cost < 0) {
+        return res.status(400).json({ error: 'تكلفة الرحلة يجب أن تكون رقماً غير سالب' });
       }
-
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'الرحلة غير موجودة' });
-      }
-
-      res.json({ message: 'تم تحديث الرحلة بنجاح' });
     }
-  );
+
+    const result = await queryRun(
+      'UPDATE trips SET name = $1, trip_date = $2, trip_cost_usd = $3, notes = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5',
+      [name, trip_date, trip_cost_usd || 0, notes || null, id]
+    );
+
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'الرحلة غير موجودة' });
+    }
+
+    res.json({ message: 'تم تحديث الرحلة بنجاح' });
+  } catch (err) {
+    console.error('Update trip error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Delete trip
-app.delete('/api/trips/:id', authenticateToken, (req, res) => {
-  const { id } = req.params;
+app.delete('/api/trips/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
 
-  db.run('DELETE FROM trips WHERE id = ?', [id], function(err) {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
-    }
+    const result = await queryRun('DELETE FROM trips WHERE id = $1', [id]);
 
-    if (this.changes === 0) {
+    if (result.changes === 0) {
       return res.status(404).json({ error: 'الرحلة غير موجودة' });
     }
 
     res.json({ message: 'تم حذف الرحلة بنجاح' });
-  });
+  } catch (err) {
+    console.error('Delete trip error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // ===== PILGRIMS ENDPOINTS =====
 
 // Get pilgrims for a specific trip
-app.get('/api/trips/:tripId/pilgrims', authenticateToken, (req, res) => {
-  const { tripId } = req.params;
-  const { search, nationality, hasVisa } = req.query;
+app.get('/api/trips/:tripId/pilgrims', authenticateToken, async (req, res) => {
+  try {
+    const { tripId } = req.params;
+    const { search, nationality, hasVisa } = req.query;
 
-  let query = `
-    SELECT
-      p.*,
-      COALESCE(SUM(pay.amount_usd), 0) as total_received,
-      COUNT(pay.id) as payment_count
-    FROM pilgrims p
-    LEFT JOIN payments pay ON p.id = pay.pilgrim_id
-    WHERE p.trip_id = ?
-  `;
-  const params = [tripId];
-  const conditions = [];
+    let sql = `
+      SELECT
+        p.*,
+        COALESCE(SUM(pay.amount_usd), 0) as total_received,
+        COUNT(pay.id) as payment_count
+      FROM pilgrims p
+      LEFT JOIN payments pay ON p.id = pay.pilgrim_id
+      WHERE p.trip_id = $1
+    `;
+    const params = [tripId];
+    const conditions = [];
 
-  // Search
-  if (search) {
-    conditions.push('(p.full_name LIKE ? OR p.passport_number LIKE ? OR p.visa_number LIKE ?)');
-    const searchTerm = `%${search}%`;
-    params.push(searchTerm, searchTerm, searchTerm);
-  }
-
-  // Filter by nationality
-  if (nationality) {
-    conditions.push('p.nationality = ?');
-    params.push(nationality);
-  }
-
-  // Filter by visa status
-  if (hasVisa === 'true') {
-    conditions.push('p.visa_number IS NOT NULL AND p.visa_number != ""');
-  } else if (hasVisa === 'false') {
-    conditions.push('(p.visa_number IS NULL OR p.visa_number = "")');
-  }
-
-  if (conditions.length > 0) {
-    query += ' AND ' + conditions.join(' AND ');
-  }
-
-  query += ' GROUP BY p.id ORDER BY p.created_at DESC';
-
-  db.all(query, params, (err, pilgrims) => {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
+    // Search
+    if (search) {
+      conditions.push('(p.full_name LIKE $2 OR p.passport_number LIKE $3 OR p.visa_number LIKE $4)');
+      const searchTerm = `%${search}%`;
+      params.push(searchTerm, searchTerm, searchTerm);
     }
+
+    // Filter by nationality
+    if (nationality) {
+      conditions.push('p.nationality = $' + (params.length + 1));
+      params.push(nationality);
+    }
+
+    // Filter by visa status
+    if (hasVisa === 'true') {
+      conditions.push('p.visa_number IS NOT NULL AND p.visa_number != \'\'');
+    } else if (hasVisa === 'false') {
+      conditions.push('(p.visa_number IS NULL OR p.visa_number = \'\')');
+    }
+
+    if (conditions.length > 0) {
+      sql += ' AND ' + conditions.join(' AND ');
+    }
+
+    sql += ' GROUP BY p.id ORDER BY p.created_at DESC';
+
+    const pilgrims = await query(sql, params);
 
     const pilgrimsWithStatus = pilgrims.map((p) => ({
       ...p,
@@ -466,442 +499,218 @@ app.get('/api/trips/:tripId/pilgrims', authenticateToken, (req, res) => {
     }));
 
     res.json({ pilgrims: pilgrimsWithStatus });
-  });
+  } catch (err) {
+    console.error('Get pilgrims error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Get single pilgrim
-app.get('/api/pilgrims/:id', authenticateToken, (req, res) => {
-  const { id } = req.params;
+app.get('/api/pilgrims/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
 
-  db.get('SELECT * FROM pilgrims WHERE id = ?', [id], (err, pilgrim) => {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
-    }
+    const pilgrim = await queryGet('SELECT * FROM pilgrims WHERE id = $1', [id]);
 
     if (!pilgrim) {
       return res.status(404).json({ error: 'السجل غير موجود' });
     }
 
     // Get payments for this pilgrim
-    db.all(
-      'SELECT * FROM payments WHERE pilgrim_id = ? ORDER BY payment_date DESC',
-      [id],
-      (err, payments) => {
-        if (err) {
-          return res.status(500).json({ error: 'خطأ في الخادم' });
-        }
-
-        const totalReceived = payments.reduce((sum, p) => sum + p.amount_usd, 0);
-
-        // Get cash denominations for each payment
-        const paymentsWithDenominations = payments.map(payment => ({
-          ...payment,
-          cash_denominations: []
-        }));
-
-        const fetchDenominations = paymentsWithDenominations.map(payment => {
-          return new Promise((resolve, reject) => {
-            if (payment.payment_method === 'نقدًا') {
-              db.all(
-                'SELECT * FROM cash_payment_denominations WHERE payment_id = ?',
-                [payment.id],
-                (err, denominations) => {
-                  if (err) reject(err);
-                  else {
-                    payment.cash_denominations = denominations;
-                    resolve(payment);
-                  }
-                }
-              );
-            } else {
-              resolve(payment);
-            }
-          });
-        });
-
-        Promise.all(fetchDenominations)
-          .then(paymentsWithData => {
-            res.json({
-              ...pilgrim,
-              payments: paymentsWithData,
-              total_received: totalReceived,
-              payment_status: totalReceived > 0 ? 'مدفوع جزئيًا' : 'غير مدفوع'
-            });
-          })
-          .catch(err => res.status(500).json({ error: 'خطأ في الخادم' }));
-      }
+    const payments = await query(
+      'SELECT * FROM payments WHERE pilgrim_id = $1 ORDER BY payment_date DESC',
+      [id]
     );
-  });
+
+    const totalReceived = payments.reduce((sum, p) => sum + p.amount_usd, 0);
+
+    const pilgrimPaymentsWithData = payments.map(payment => ({
+      ...payment,
+      cash_denominations: []
+    }));
+
+    res.json({
+      ...pilgrim,
+      payments: pilgrimPaymentsWithData,
+      total_received: totalReceived,
+      payment_status: totalReceived > 0 ? 'مدفوع جزئيًا' : 'غير مدفوع'
+    });
+  } catch (err) {
+    console.error('Get pilgrim error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Create pilgrim
-app.post('/api/pilgrims', authenticateToken, (req, res) => {
-  const { trip_id, full_name, nationality, passport_number, visa_number, notes } = req.body;
+app.post('/api/pilgrims', authenticateToken, async (req, res) => {
+  try {
+    const { trip_id, full_name, nationality, passport_number, visa_number, notes } = req.body;
 
-  if (!trip_id || !full_name || !nationality || !passport_number) {
-    return res.status(400).json({ error: 'الرحلة والاسم الكامل والجنسية ورقم جواز السفر مطلوبة' });
-  }
-
-  db.run(
-    'INSERT INTO pilgrims (trip_id, full_name, nationality, passport_number, visa_number, notes) VALUES (?, ?, ?, ?, ?, ?)',
-    [trip_id, full_name, nationality, passport_number, visa_number || null, notes || null],
-    function(err) {
-      if (err) {
-        if (err.message.includes('UNIQUE')) {
-          return res.status(400).json({ error: 'رقم جواز السفر موجود بالفعل' });
-        }
-        return res.status(500).json({ error: 'خطأ في الخادم' });
-      }
-
-      res.status(201).json({ message: 'تمت إضافة السجل بنجاح', id: this.lastID });
+    if (!trip_id || !full_name || !nationality || !passport_number) {
+      return res.status(400).json({ error: 'الرحلة والاسم الكامل والجنسية ورقم جواز السفر مطلوبة' });
     }
-  );
+
+    const result = await queryRun(
+      'INSERT INTO pilgrims (trip_id, full_name, nationality, passport_number, visa_number, notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      [trip_id, full_name, nationality, passport_number, visa_number || null, notes || null]
+    );
+
+    res.status(201).json({ message: 'تمت إضافة السجل بنجاح', id: result.lastID });
+  } catch (err) {
+    console.error('Create pilgrim error:', err);
+    if (err.message && err.message.includes('unique')) {
+      return res.status(400).json({ error: 'رقم جواز السفر موجود بالفعل' });
+    }
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Update pilgrim
-app.put('/api/pilgrims/:id', authenticateToken, (req, res) => {
-  const { id } = req.params;
-  const { full_name, nationality, passport_number, visa_number, notes } = req.body;
+app.put('/api/pilgrims/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { full_name, nationality, passport_number, visa_number, notes } = req.body;
 
-  if (!full_name || !nationality || !passport_number) {
-    return res.status(400).json({ error: 'الاسم الكامل والجنسية ورقم جواز السفر مطلوبة' });
-  }
-
-  db.run(
-    'UPDATE pilgrims SET full_name = ?, nationality = ?, passport_number = ?, visa_number = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [full_name, nationality, passport_number, visa_number || null, notes || null, id],
-    function(err) {
-      if (err) {
-        if (err.message.includes('UNIQUE')) {
-          return res.status(400).json({ error: 'رقم جواز السفر موجود بالفعل' });
-        }
-        return res.status(500).json({ error: 'خطأ في الخادم' });
-      }
-
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'السجل غير موجود' });
-      }
-
-      res.json({ message: 'تم تحديث البيانات بنجاح' });
+    if (!full_name || !nationality || !passport_number) {
+      return res.status(400).json({ error: 'الاسم الكامل والجنسية ورقم جواز السفر مطلوبة' });
     }
-  );
+
+    const result = await queryRun(
+      'UPDATE pilgrims SET full_name = $1, nationality = $2, passport_number = $3, visa_number = $4, notes = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6',
+      [full_name, nationality, passport_number, visa_number || null, notes || null, id]
+    );
+
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'السجل غير موجود' });
+    }
+
+    res.json({ message: 'تم تحديث البيانات بنجاح' });
+  } catch (err) {
+    console.error('Update pilgrim error:', err);
+    if (err.message && err.message.includes('unique')) {
+      return res.status(400).json({ error: 'رقم جواز السفر موجود بالفعل' });
+    }
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Delete pilgrim
-app.delete('/api/pilgrims/:id', authenticateToken, (req, res) => {
-  const { id } = req.params;
+app.delete('/api/pilgrims/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
 
-  db.run('DELETE FROM pilgrims WHERE id = ?', [id], function(err) {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
-    }
+    const result = await queryRun('DELETE FROM pilgrims WHERE id = $1', [id]);
 
-    if (this.changes === 0) {
+    if (result.changes === 0) {
       return res.status(404).json({ error: 'السجل غير موجود' });
     }
 
     res.json({ message: 'تم حذف السجل بنجاح' });
-  });
+  } catch (err) {
+    console.error('Delete pilgrim error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // ===== PAYMENTS ENDPOINTS =====
 
 // Get all payments
-app.get('/api/payments', authenticateToken, (req, res) => {
-  const { page = 1, limit = 10, search } = req.query;
+app.get('/api/payments', authenticateToken, async (req, res) => {
+  try {
+    const { page = 1, limit = 10, search } = req.query;
 
-  const offset = (page - 1) * limit;
-  let query = `
-    SELECT
-      pay.*,
-      p.full_name,
-      p.nationality,
-      t.name as trip_name
-    FROM payments pay
-    JOIN pilgrims p ON pay.pilgrim_id = p.id
-    JOIN trips t ON p.trip_id = t.id
-  `;
-  const params = [];
+    const offset = (page - 1) * limit;
+    let sql = `
+      SELECT
+        pay.*,
+        p.full_name,
+        p.nationality,
+        t.name as trip_name
+      FROM payments pay
+      JOIN pilgrims p ON pay.pilgrim_id = p.id
+      JOIN trips t ON p.trip_id = t.id
+    `;
+    const params = [];
 
-  if (search) {
-    query += ' WHERE p.full_name LIKE ? OR p.passport_number LIKE ?';
-    params.push(`%${search}%`, `%${search}%`);
-  }
-
-  query += ' ORDER BY pay.payment_date DESC LIMIT ? OFFSET ?';
-  params.push(parseInt(limit), offset);
-
-  db.all(query, params, (err, payments) => {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
+    if (search) {
+      sql += ' WHERE p.full_name LIKE $1 OR p.passport_number LIKE $2';
+      params.push(`%${search}%`, `%${search}%`);
     }
+
+    sql += ' ORDER BY pay.payment_date DESC LIMIT $' + (params.length + 1) + ' OFFSET $' + (params.length + 2);
+    params.push(parseInt(limit), offset);
+
+    const payments = await query(sql, params);
 
     // Get total count
     let countQuery = 'SELECT COUNT(*) as total FROM payments pay JOIN pilgrims p ON pay.pilgrim_id = p.id JOIN trips t ON p.trip_id = t.id';
     if (search) {
-      countQuery += ' WHERE p.full_name LIKE ? OR p.passport_number LIKE ?';
+      countQuery += ' WHERE p.full_name LIKE $1 OR p.passport_number LIKE $2';
     }
 
-    db.get(countQuery, params.slice(0, -2), (err, countResult) => {
-      if (err) {
-        return res.status(500).json({ error: 'خطأ في الخادم' });
-      }
+    const countResult = await queryGet(countQuery, params.slice(0, -2));
 
-      res.json({
-        payments,
-        pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total: countResult.total,
-          totalPages: Math.ceil(countResult.total / limit)
-        }
-      });
+    res.json({
+      payments,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult.total,
+        totalPages: Math.ceil(countResult.total / limit)
+      }
     });
-  });
+  } catch (err) {
+    console.error('Get payments error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 // Create payment
-app.post('/api/payments', authenticateToken, (req, res) => {
-  const { pilgrim_id, amount_usd, payment_method, transaction_reference, notes, cash_denominations } = req.body;
+app.post('/api/payments', authenticateToken, async (req, res) => {
+  try {
+    const { pilgrim_id, amount_usd, payment_method, transaction_reference, notes, cash_denominations } = req.body;
 
-  if (!pilgrim_id || !amount_usd || !payment_method) {
-    return res.status(400).json({ error: 'معرف الحاج والمبلغ وطريقة الدفع مطلوبة' });
-  }
-
-  if (amount_usd <= 0) {
-    return res.status(400).json({ error: 'المبلغ يجب أن يكون أكبر من صفر' });
-  }
-
-  if (!['نقدًا', 'شام كاش'].includes(payment_method)) {
-    return res.status(400).json({ error: 'طريقة الدفع غير صالحة' });
-  }
-
-  // Validate cash denominations if payment method is cash
-  if (payment_method === 'نقدًا') {
-    if (!cash_denominations || !Array.isArray(cash_denominations) || cash_denominations.length === 0) {
-      return res.status(400).json({ error: 'يجب إدخال تفاصيل الدفع النقدي' });
+    if (!pilgrim_id || !amount_usd || !payment_method) {
+      return res.status(400).json({ error: 'معرف الحاج والمبلغ وطريقة الدفع مطلوبة' });
     }
 
-    const denominationsTotal = cash_denominations.reduce((sum, d) => sum + (d.denomination * d.quantity), 0);
-
-    if (Math.abs(denominationsTotal - amount_usd) > 0.01) {
-      return res.status(400).json({ error: 'مجموع فئات العملة النقدية لا يساوي مبلغ الدفعة' });
-    }
-  }
-
-  db.run(
-    'INSERT INTO payments (pilgrim_id, amount_usd, payment_method, transaction_reference, notes) VALUES (?, ?, ?, ?, ?)',
-    [pilgrim_id, amount_usd, payment_method, transaction_reference || null, notes || null],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'خطأ في الخادم' });
-      }
-
-      const paymentId = this.lastID;
-
-      // Add cash denominations if payment method is cash
-      if (payment_method === 'نقدًا' && cash_denominations) {
-        const insertDenominations = cash_denominations.map(denom => {
-          return new Promise((resolve, reject) => {
-            db.run(
-              'INSERT INTO cash_payment_denominations (payment_id, denomination, quantity, subtotal) VALUES (?, ?, ?, ?)',
-              [paymentId, denom.denomination, denom.quantity, denom.denomination * denom.quantity],
-              (err) => {
-                if (err) reject(err);
-                else resolve();
-              }
-            );
-          });
-        });
-
-        Promise.all(insertDenominations)
-          .then(() => {
-            res.status(201).json({ message: 'تمت إضافة الدفعة بنجاح', id: paymentId });
-          })
-          .catch(err => {
-            res.status(500).json({ error: 'خطأ في إضافة تفاصيل الدفع النقدي' });
-          });
-      } else {
-        res.status(201).json({ message: 'تمت إضافة الدفعة بنجاح', id: paymentId });
-      }
-    }
-  );
-});
-
-// Update payment
-app.put('/api/payments/:id', authenticateToken, (req, res) => {
-  const { id } = req.params;
-  const { amount_usd, payment_method, transaction_reference, notes, cash_denominations } = req.body;
-
-  if (!amount_usd || !payment_method) {
-    return res.status(400).json({ error: 'المبلغ وطريقة الدفع مطلوبة' });
-  }
-
-  if (amount_usd <= 0) {
-    return res.status(400).json({ error: 'المبلغ يجب أن يكون أكبر من صفر' });
-  }
-
-  if (!['نقدًا', 'شام كاش'].includes(payment_method)) {
-    return res.status(400).json({ error: 'طريقة الدفع غير صالحة' });
-  }
-
-  // Validate cash denominations if payment method is cash
-  if (payment_method === 'نقدًا') {
-    if (!cash_denominations || !Array.isArray(cash_denominations) || cash_denominations.length === 0) {
-      return res.status(400).json({ error: 'يجب إدخال تفاصيل الدفع النقدي' });
+    if (amount_usd <= 0) {
+      return res.status(400).json({ error: 'المبلغ يجب أن يكون أكبر من صفر' });
     }
 
-    const denominationsTotal = cash_denominations.reduce((sum, d) => sum + (d.denomination * d.quantity), 0);
-
-    if (Math.abs(denominationsTotal - amount_usd) > 0.01) {
-      return res.status(400).json({ error: 'مجموع فئات العملة النقدية لا يساوي مبلغ الدفعة' });
+    if (!['نقدًا', 'شام كاش'].includes(payment_method)) {
+      return res.status(400).json({ error: 'طريقة الدفع غير صالحة' });
     }
+
+    // Create payment
+    const result = await queryRun(
+      'INSERT INTO payments (pilgrim_id, amount_usd, payment_method, transaction_reference, notes) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [pilgrim_id, amount_usd, payment_method, transaction_reference || null, notes || null]
+    );
+
+    res.status(201).json({ message: 'تمت إضافة الدفعة بنجاح', id: result.lastID });
+  } catch (err) {
+    console.error('Create payment error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
   }
-
-  db.run(
-    'UPDATE payments SET amount_usd = ?, payment_method = ?, transaction_reference = ?, notes = ? WHERE id = ?',
-    [amount_usd, payment_method, transaction_reference || null, notes || null, id],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'خطأ في الخادم' });
-      }
-
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'الدفعة غير موجودة' });
-      }
-
-      // Delete existing cash denominations
-      db.run('DELETE FROM cash_payment_denominations WHERE payment_id = ?', [id], (err) => {
-        if (err) {
-          return res.status(500).json({ error: 'خطأ في تحديث تفاصيل الدفع النقدي' });
-        }
-
-        // Add new cash denominations if payment method is cash
-        if (payment_method === 'نقدًا' && cash_denominations) {
-          const insertDenominations = cash_denominations.map(denom => {
-            return new Promise((resolve, reject) => {
-              db.run(
-                'INSERT INTO cash_payment_denominations (payment_id, denomination, quantity, subtotal) VALUES (?, ?, ?, ?)',
-                [id, denom.denomination, denom.quantity, denom.denomination * denom.quantity],
-                (err) => {
-                  if (err) reject(err);
-                  else resolve();
-                }
-              );
-            });
-          });
-
-          Promise.all(insertDenominations)
-            .then(() => {
-              res.json({ message: 'تم تحديث الدفعة بنجاح' });
-            })
-            .catch(err => {
-              res.status(500).json({ error: 'خطأ في تحديث تفاصيل الدفع النقدي' });
-            });
-        } else {
-          res.json({ message: 'تم تحديث الدفعة بنجاح' });
-        }
-      });
-    }
-  );
 });
 
 // Delete payment
-app.delete('/api/payments/:id', authenticateToken, (req, res) => {
-  const { id } = req.params;
+app.delete('/api/payments/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
 
-  db.run('DELETE FROM payments WHERE id = ?', [id], function(err) {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
-    }
+    const result = await queryRun('DELETE FROM payments WHERE id = $1', [id]);
 
-    if (this.changes === 0) {
+    if (result.changes === 0) {
       return res.status(404).json({ error: 'الدفعة غير موجودة' });
     }
 
     res.json({ message: 'تم حذف الدفعة بنجاح' });
-  });
-});
-
-// ===== REPORTS ENDPOINTS =====
-
-app.get('/api/reports/summary', authenticateToken, (req, res) => {
-  const { startDate, endDate, nationality, paymentStatus, tripId } = req.query;
-
-  let query = `
-    SELECT
-      COUNT(DISTINCT t.id) as total_trips,
-      COUNT(DISTINCT p.id) as total_pilgrims,
-      COALESCE(SUM(t.trip_cost_usd), 0) as total_trip_cost,
-      COALESCE(SUM(pay.amount_usd), 0) as total_received,
-      COALESCE(SUM(t.trip_cost_usd), 0) - COALESCE(SUM(pay.amount_usd), 0) as total_outstanding,
-      COALESCE(SUM(pay.amount_usd), 0) - COALESCE(SUM(t.trip_cost_usd), 0) as net_total,
-      COUNT(DISTINCT CASE WHEN pay.id IS NOT NULL THEN p.id END) as with_payments,
-      COUNT(DISTINCT CASE WHEN pay.id IS NULL THEN p.id END) as without_payments,
-      SUM(CASE WHEN pay.payment_method = 'نقدًا' THEN pay.amount_usd ELSE 0 END) as cash_total,
-      SUM(CASE WHEN pay.payment_method = 'شام كاش' THEN pay.amount_usd ELSE 0 END) as sham_cash_total
-    FROM trips t
-    LEFT JOIN pilgrims p ON t.id = p.trip_id
-    LEFT JOIN payments pay ON p.id = pay.pilgrim_id
-  `;
-  const params = [];
-  const conditions = [];
-
-  if (startDate) {
-    conditions.push('t.trip_date >= ?');
-    params.push(startDate);
+  } catch (err) {
+    console.error('Delete payment error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
   }
-
-  if (endDate) {
-    conditions.push('t.trip_date <= ?');
-    params.push(endDate);
-  }
-
-  if (nationality) {
-    conditions.push('p.nationality = ?');
-    params.push(nationality);
-  }
-
-  if (tripId) {
-    conditions.push('t.id = ?');
-    params.push(tripId);
-  }
-
-  if (conditions.length > 0) {
-    query += ' WHERE ' + conditions.join(' AND ');
-  }
-
-  db.get(query, params, (err, result) => {
-    if (err) {
-      return res.status(500).json({ error: 'خطأ في الخادم' });
-    }
-
-    res.json(result);
-  });
-});
-
-app.get('/api/reports/nationalities', authenticateToken, (req, res) => {
-  db.all(
-    'SELECT nationality, COUNT(*) as count FROM pilgrims GROUP BY nationality ORDER BY count DESC',
-    (err, results) => {
-      if (err) {
-        return res.status(500).json({ error: 'خطأ في الخادم' });
-      }
-      res.json(results);
-    }
-  );
-});
-
-app.get('/api/reports/trips', authenticateToken, (req, res) => {
-  db.all(
-    'SELECT id, name, trip_date FROM trips ORDER BY trip_date DESC',
-    (err, results) => {
-      if (err) {
-        return res.status(500).json({ error: 'خطأ في الخادم' });
-      }
-      res.json(results);
-    }
-  );
 });
 
 app.listen(PORT, () => {
