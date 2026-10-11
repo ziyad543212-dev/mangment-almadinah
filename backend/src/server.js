@@ -1,11 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-
-// Use PostgreSQL in production, SQLite in development
-const db = process.env.NODE_ENV === 'production' 
-  ? require('./database-pg') 
-  : require('./database');
+const db = require("./database");
 
 const { hashPassword, comparePassword, generateToken, authenticateToken } = require('./auth');
 
@@ -18,57 +14,28 @@ app.use(express.json());
 // Helper function to convert callback-based queries to promises
 function query(sql, params = []) {
   return new Promise((resolve, reject) => {
-    if (process.env.NODE_ENV === 'production') {
-      // PostgreSQL - use pool.query directly
-      db.pool.query(sql, params)
-        .then(result => resolve(result.rows))
-        .catch(reject);
-    } else {
-      // SQLite - use callback
-      db.all(sql, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    }
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
   });
 }
 
 function queryGet(sql, params = []) {
   return new Promise((resolve, reject) => {
-    if (process.env.NODE_ENV === 'production') {
-      // PostgreSQL
-      db.pool.query(sql, params)
-        .then(result => resolve(result.rows[0]))
-        .catch(reject);
-    } else {
-      // SQLite
-      db.get(sql, params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    }
+    db.get(sql, params, (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
   });
 }
 
 function queryRun(sql, params = []) {
   return new Promise((resolve, reject) => {
-    if (process.env.NODE_ENV === 'production') {
-      // PostgreSQL
-      db.pool.query(sql, params)
-        .then(result => {
-          resolve({
-            lastID: result.rows[0]?.id,
-            changes: result.rowCount
-          });
-        })
-        .catch(reject);
-    } else {
-      // SQLite
-      db.run(sql, params, function(err) {
-        if (err) reject(err);
-        else resolve({ lastID: this.lastID, changes: this.changes });
-      });
-    }
+    db.run(sql, params, function(err) {
+      if (err) reject(err);
+      else resolve({ lastID: this.lastID, changes: this.changes });
+    });
   });
 }
 
@@ -120,7 +87,7 @@ app.post('/api/auth/setup-admin', async (req, res) => {
     const passwordHash = hashPassword(password);
 
     const result = await queryRun(
-      'INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id',
+      'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
       [username, passwordHash, 'admin']
     );
 
@@ -157,7 +124,7 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
     }
 
     // Get current user
-    const user = await queryGet('SELECT * FROM users WHERE id = $1', [req.user.id]);
+    const user = await queryGet('SELECT * FROM users WHERE id = ?', [req.user.id]);
 
     if (!user) {
       return res.status(404).json({ error: 'المستخدم غير موجود' });
@@ -173,7 +140,7 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
 
     // Update password
     await queryRun(
-      'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      'UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [newPasswordHash, req.user.id]
     );
 
@@ -265,7 +232,7 @@ app.get('/api/trips', authenticateToken, async (req, res) => {
 
     // Search
     if (search) {
-      conditions.push('t.name LIKE $1');
+      conditions.push('t.name LIKE ?');
       params.push(`%${search}%`);
     }
 
@@ -326,7 +293,7 @@ app.get('/api/trips/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const trip = await queryGet('SELECT * FROM trips WHERE id = $1', [id]);
+    const trip = await queryGet('SELECT * FROM trips WHERE id = ?', [id]);
 
     if (!trip) {
       return res.status(404).json({ error: 'الرحلة غير موجودة' });
@@ -340,7 +307,7 @@ app.get('/api/trips/:id', authenticateToken, async (req, res) => {
         COUNT(pay.id) as payment_count
       FROM pilgrims p
       LEFT JOIN payments pay ON p.id = pay.pilgrim_id
-      WHERE p.trip_id = $1
+      WHERE p.trip_id = ?
       GROUP BY p.id
     `, [id]);
 
@@ -383,7 +350,7 @@ app.post('/api/trips', authenticateToken, async (req, res) => {
     }
 
     const result = await queryRun(
-      'INSERT INTO trips (name, trip_date, trip_cost_usd, notes) VALUES ($1, $2, $3, $4) RETURNING id',
+      'INSERT INTO trips (name, trip_date, trip_cost_usd, notes) VALUES (?, ?, ?, ?)',
       [name, trip_date, trip_cost_usd || 0, notes || null]
     );
 
@@ -412,7 +379,7 @@ app.put('/api/trips/:id', authenticateToken, async (req, res) => {
     }
 
     const result = await queryRun(
-      'UPDATE trips SET name = $1, trip_date = $2, trip_cost_usd = $3, notes = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5',
+      'UPDATE trips SET name = ?, trip_date = ?, trip_cost_usd = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [name, trip_date, trip_cost_usd || 0, notes || null, id]
     );
 
@@ -432,7 +399,7 @@ app.delete('/api/trips/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await queryRun('DELETE FROM trips WHERE id = $1', [id]);
+    const result = await queryRun('DELETE FROM trips WHERE id = ?', [id]);
 
     if (result.changes === 0) {
       return res.status(404).json({ error: 'الرحلة غير موجودة' });
@@ -460,14 +427,14 @@ app.get('/api/trips/:tripId/pilgrims', authenticateToken, async (req, res) => {
         COUNT(pay.id) as payment_count
       FROM pilgrims p
       LEFT JOIN payments pay ON p.id = pay.pilgrim_id
-      WHERE p.trip_id = $1
+      WHERE p.trip_id = ?
     `;
     const params = [tripId];
     const conditions = [];
 
     // Search
     if (search) {
-      conditions.push('(p.full_name LIKE $2 OR p.passport_number LIKE $3 OR p.visa_number LIKE $4)');
+      conditions.push('(p.full_name LIKE ? OR p.passport_number LIKE ? OR p.visa_number LIKE ?)');
       const searchTerm = `%${search}%`;
       params.push(searchTerm, searchTerm, searchTerm);
     }
@@ -510,7 +477,7 @@ app.get('/api/pilgrims/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const pilgrim = await queryGet('SELECT * FROM pilgrims WHERE id = $1', [id]);
+    const pilgrim = await queryGet('SELECT * FROM pilgrims WHERE id = ?', [id]);
 
     if (!pilgrim) {
       return res.status(404).json({ error: 'السجل غير موجود' });
@@ -518,7 +485,7 @@ app.get('/api/pilgrims/:id', authenticateToken, async (req, res) => {
 
     // Get payments for this pilgrim
     const payments = await query(
-      'SELECT * FROM payments WHERE pilgrim_id = $1 ORDER BY payment_date DESC',
+      'SELECT * FROM payments WHERE pilgrim_id = ? ORDER BY payment_date DESC',
       [id]
     );
 
@@ -551,7 +518,7 @@ app.post('/api/pilgrims', authenticateToken, async (req, res) => {
     }
 
     const result = await queryRun(
-      'INSERT INTO pilgrims (trip_id, full_name, nationality, passport_number, visa_number, notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      'INSERT INTO pilgrims (trip_id, full_name, nationality, passport_number, visa_number, notes) VALUES (?, ?, ?, ?, ?, ?)',
       [trip_id, full_name, nationality, passport_number, visa_number || null, notes || null]
     );
 
@@ -576,7 +543,7 @@ app.put('/api/pilgrims/:id', authenticateToken, async (req, res) => {
     }
 
     const result = await queryRun(
-      'UPDATE pilgrims SET full_name = $1, nationality = $2, passport_number = $3, visa_number = $4, notes = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6',
+      'UPDATE pilgrims SET full_name = ?, nationality = ?, passport_number = ?, visa_number = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [full_name, nationality, passport_number, visa_number || null, notes || null, id]
     );
 
@@ -599,7 +566,7 @@ app.delete('/api/pilgrims/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await queryRun('DELETE FROM pilgrims WHERE id = $1', [id]);
+    const result = await queryRun('DELETE FROM pilgrims WHERE id = ?', [id]);
 
     if (result.changes === 0) {
       return res.status(404).json({ error: 'السجل غير موجود' });
@@ -633,7 +600,7 @@ app.get('/api/payments', authenticateToken, async (req, res) => {
     const params = [];
 
     if (search) {
-      sql += ' WHERE p.full_name LIKE $1 OR p.passport_number LIKE $2';
+      sql += ' WHERE p.full_name LIKE ? OR p.passport_number LIKE ?';
       params.push(`%${search}%`, `%${search}%`);
     }
 
@@ -645,7 +612,7 @@ app.get('/api/payments', authenticateToken, async (req, res) => {
     // Get total count
     let countQuery = 'SELECT COUNT(*) as total FROM payments pay JOIN pilgrims p ON pay.pilgrim_id = p.id JOIN trips t ON p.trip_id = t.id';
     if (search) {
-      countQuery += ' WHERE p.full_name LIKE $1 OR p.passport_number LIKE $2';
+      countQuery += ' WHERE p.full_name LIKE ? OR p.passport_number LIKE ?';
     }
 
     const countResult = await queryGet(countQuery, params.slice(0, -2));
@@ -684,7 +651,7 @@ app.post('/api/payments', authenticateToken, async (req, res) => {
 
     // Create payment
     const result = await queryRun(
-      'INSERT INTO payments (pilgrim_id, amount_usd, payment_method, transaction_reference, notes) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      'INSERT INTO payments (pilgrim_id, amount_usd, payment_method, transaction_reference, notes) VALUES (?, ?, ?, ?, ?)',
       [pilgrim_id, amount_usd, payment_method, transaction_reference || null, notes || null]
     );
 
@@ -700,7 +667,7 @@ app.delete('/api/payments/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await queryRun('DELETE FROM payments WHERE id = $1', [id]);
+    const result = await queryRun('DELETE FROM payments WHERE id = ?', [id]);
 
     if (result.changes === 0) {
       return res.status(404).json({ error: 'الدفعة غير موجودة' });
