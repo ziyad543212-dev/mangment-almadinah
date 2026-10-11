@@ -160,6 +160,11 @@ function Login() {
 
         <div style={{ marginTop: '1.5rem', textAlign: 'center', fontSize: '0.75rem', color: '#999' }}>
           <p>للحصول على معلومات الدخول،请联系 المسؤول</p>
+          <div style={{ marginTop: '0.5rem' }}>
+            <a href="/setup" style={{ color: '#D4AF37', textDecoration: 'none', fontSize: '0.875rem' }}>
+              إنشاء مستخدم مسؤول
+            </a>
+          </div>
         </div>
 
         <div style={{ marginTop: '1rem', textAlign: 'center' }}>

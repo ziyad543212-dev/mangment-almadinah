@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
+import Setup from './pages/Setup';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Trips from './pages/Trips';
@@ -16,6 +17,7 @@ function App() {
     <ThemeProvider>
       <Router>
         <Routes>
+          <Route path="/setup" element={<Setup />} />
           <Route path="/login" element={<Login />} />
           <Route
             path="/"
