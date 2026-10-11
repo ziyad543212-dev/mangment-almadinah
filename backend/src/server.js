@@ -1,6 +1,12 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const sqlite3 = require('sqlite3').verbose();
+const Tesseract = require('tesseract.js');
+const { MRZ } = require('mrz');
 const db = require("./database");
 
 const { hashPassword, comparePassword, generateToken, authenticateToken } = require('./auth');
@@ -10,6 +16,23 @@ const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, '../uploads');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ storage: storage });
 
 // Helper function to convert callback-based queries to promises
 function query(sql, params = []) {
@@ -434,9 +457,9 @@ app.get('/api/trips/:tripId/pilgrims', authenticateToken, async (req, res) => {
 
     // Search
     if (search) {
-      conditions.push('(p.full_name LIKE ? OR p.passport_number LIKE ? OR p.visa_number LIKE ?)');
+      conditions.push('(p.name_ar LIKE ? OR p.name_en LIKE ? OR p.passport_number LIKE ? OR p.visa_number LIKE ?)');
       const searchTerm = `%${search}%`;
-      params.push(searchTerm, searchTerm, searchTerm);
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
     }
 
     // Filter by nationality
@@ -511,15 +534,15 @@ app.get('/api/pilgrims/:id', authenticateToken, async (req, res) => {
 // Create pilgrim
 app.post('/api/pilgrims', authenticateToken, async (req, res) => {
   try {
-    const { trip_id, full_name, nationality, passport_number, visa_number, notes } = req.body;
+    const { trip_id, name_ar, name_en, nationality, passport_number, passport_expiry_date, date_of_birth, gender, visa_number, visa_document_path, notes } = req.body;
 
-    if (!trip_id || !full_name || !nationality || !passport_number) {
-      return res.status(400).json({ error: 'الرحلة والاسم الكامل والجنسية ورقم جواز السفر مطلوبة' });
+    if (!trip_id || !nationality || !passport_number) {
+      return res.status(400).json({ error: 'الرحلة والجنسية ورقم جواز السفر مطلوبة' });
     }
 
     const result = await queryRun(
-      'INSERT INTO pilgrims (trip_id, full_name, nationality, passport_number, visa_number, notes) VALUES (?, ?, ?, ?, ?, ?)',
-      [trip_id, full_name, nationality, passport_number, visa_number || null, notes || null]
+      'INSERT INTO pilgrims (trip_id, name_ar, name_en, nationality, passport_number, passport_expiry_date, date_of_birth, gender, visa_number, visa_document_path, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [trip_id, name_ar || null, name_en || null, nationality, passport_number, passport_expiry_date || null, date_of_birth || null, gender || null, visa_number || null, visa_document_path || null, notes || null]
     );
 
     res.status(201).json({ message: 'تمت إضافة السجل بنجاح', id: result.lastID });
@@ -536,15 +559,15 @@ app.post('/api/pilgrims', authenticateToken, async (req, res) => {
 app.put('/api/pilgrims/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { full_name, nationality, passport_number, visa_number, notes } = req.body;
+    const { name_ar, name_en, nationality, passport_number, passport_expiry_date, date_of_birth, gender, visa_number, visa_document_path, notes } = req.body;
 
-    if (!full_name || !nationality || !passport_number) {
-      return res.status(400).json({ error: 'الاسم الكامل والجنسية ورقم جواز السفر مطلوبة' });
+    if (!nationality || !passport_number) {
+      return res.status(400).json({ error: 'الجنسية ورقم جواز السفر مطلوبة' });
     }
 
     const result = await queryRun(
-      'UPDATE pilgrims SET full_name = ?, nationality = ?, passport_number = ?, visa_number = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [full_name, nationality, passport_number, visa_number || null, notes || null, id]
+      'UPDATE pilgrims SET name_ar = ?, name_en = ?, nationality = ?, passport_number = ?, passport_expiry_date = ?, date_of_birth = ?, gender = ?, visa_number = ?, visa_document_path = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [name_ar || null, name_en || null, nationality, passport_number, passport_expiry_date || null, date_of_birth || null, gender || null, visa_number || null, visa_document_path || null, notes || null, id]
     );
 
     if (result.changes === 0) {
@@ -576,6 +599,135 @@ app.delete('/api/pilgrims/:id', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Delete pilgrim error:', err);
     res.status(500).json({ error: 'خطأ في الخادم' });
+  }
+});
+
+// ===== OCR ENDPOINTS =====
+
+// Passport OCR endpoint
+app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+
+    const imagePath = req.file.path;
+
+    // Use Tesseract to extract text from passport
+    const { data: { text } } = await Tesseract.recognize(
+      imagePath,
+      'eng',
+      { logger: m => console.log(m) }
+    );
+
+    // Parse MRZ (Machine Readable Zone) from the text
+    const mrzLines = text.split('\n').filter(line => line.trim().length > 30);
+    let parsedData = {
+      name_en: '',
+      passport_number: '',
+      date_of_birth: '',
+      passport_expiry_date: '',
+      nationality: '',
+      gender: ''
+    };
+
+    if (mrzLines.length >= 2) {
+      try {
+        const mrz = new MRZ(mrzLines.join('\n'));
+        parsedData = {
+          name_en: mrz.secondaryIdentifier + ' ' + mrz.primaryIdentifier,
+          passport_number: mrz.documentNumber,
+          date_of_birth: mrz.birthDate,
+          passport_expiry_date: mrz.expirationDate,
+          nationality: mrz.nationality,
+          gender: mrz.sex
+        };
+      } catch (mrzError) {
+        console.log('MRZ parsing failed, using basic OCR text extraction');
+        // Fallback: try to extract basic info from text
+        const lines = text.split('\n');
+        lines.forEach(line => {
+          if (line.includes('PN') || line.match(/\b[A-Z]{1,2}\d{6,9}\b/)) {
+            const match = line.match(/\b[A-Z]{1,2}\d{6,9}\b/);
+            if (match) parsedData.passport_number = match[0];
+          }
+        });
+      }
+    }
+
+    // Clean up uploaded file
+    fs.unlinkSync(imagePath);
+
+    res.json({
+      success: true,
+      data: parsedData,
+      raw_text: text
+    });
+  } catch (err) {
+    console.error('Passport OCR error:', err);
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ error: 'Failed to process passport image' });
+  }
+});
+
+// eVisa upload endpoint
+app.post('/api/upload/visa', authenticateToken, upload.single('visa'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No visa file provided' });
+    }
+
+    // Create visas directory if it doesn't exist
+    const visasDir = path.join(__dirname, '../uploads/visas');
+    if (!fs.existsSync(visasDir)) {
+      fs.mkdirSync(visasDir, { recursive: true });
+    }
+
+    // Move file to visas directory
+    const visaPath = path.join(visasDir, req.file.filename);
+    fs.renameSync(req.file.path, visaPath);
+
+    // Try to extract visa number using OCR
+    let visaNumber = null;
+    try {
+      const { data: { text } } = await Tesseract.recognize(
+        visaPath,
+        'eng',
+        { logger: m => console.log(m) }
+      );
+
+      // Try to find visa number pattern (various formats)
+      const visaPatterns = [
+        /Visa\s*No[:\s]*([A-Z0-9]+)/i,
+        /Number[:\s]*([A-Z0-9]+)/i,
+        /(\d{10,})/,
+        /([A-Z]{2}\d{6,})/
+      ];
+
+      for (const pattern of visaPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+          visaNumber = match[1].trim();
+          break;
+        }
+      }
+    } catch (ocrError) {
+      console.log('Visa OCR failed, user will need to enter visa number manually');
+    }
+
+    res.json({
+      success: true,
+      visa_document_path: req.file.filename,
+      visa_number: visaNumber
+    });
+  } catch (err) {
+    console.error('Visa upload error:', err);
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ error: 'Failed to upload visa' });
   }
 });
 
@@ -677,6 +829,239 @@ app.delete('/api/payments/:id', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Delete payment error:', err);
     res.status(500).json({ error: 'خطأ في الخادم' });
+  }
+});
+
+// ===== BACKUP & RESTORE ENDPOINTS =====
+
+// Export database backup
+app.get('/api/backup/export', authenticateToken, async (req, res) => {
+  try {
+    const dbPath = path.join(__dirname, '../database.sqlite');
+    const backupPath = path.join(__dirname, `../backup_${new Date().toISOString().split('T')[0]}.sqlite`);
+
+    // Copy database file
+    fs.copyFileSync(dbPath, backupPath);
+
+    res.download(backupPath, `backup_${new Date().toISOString().split('T')[0]}.sqlite`, (err) => {
+      if (err) {
+        console.error('Backup download error:', err);
+      }
+      // Clean up backup file after download
+      fs.unlinkSync(backupPath);
+    });
+  } catch (err) {
+    console.error('Backup export error:', err);
+    res.status(500).json({ error: 'Failed to export backup' });
+  }
+});
+
+// Restore database from backup
+app.post('/api/backup/restore', authenticateToken, upload.single('backup'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No backup file provided' });
+    }
+
+    const dbPath = path.join(__dirname, '../database.sqlite');
+    const backupPath = req.file.path;
+
+    // Close current database connection
+    db.close((err) => {
+      if (err) {
+        console.error('Error closing database:', err);
+        fs.unlinkSync(backupPath);
+        return res.status(500).json({ error: 'Failed to close database' });
+      }
+
+      // Replace database file with backup
+      fs.copyFileSync(backupPath, dbPath);
+      fs.unlinkSync(backupPath);
+
+      // Reopen database connection
+      const newDb = new sqlite3.Database(dbPath, (err) => {
+        if (err) {
+          console.error('Error reopening database:', err);
+          return res.status(500).json({ error: 'Failed to reopen database' });
+        }
+
+        res.json({ message: 'Database restored successfully. Please restart the application.' });
+      });
+    });
+  } catch (err) {
+    console.error('Backup restore error:', err);
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ error: 'Failed to restore backup' });
+  }
+});
+
+// ===== PASSENGER MANIFEST & PDF EXPORT =====
+
+// Get passenger manifest for a trip
+app.get('/api/trips/:tripId/manifest', authenticateToken, async (req, res) => {
+  try {
+    const { tripId } = req.params;
+
+    const trip = await queryGet('SELECT * FROM trips WHERE id = ?', [tripId]);
+
+    if (!trip) {
+      return res.status(404).json({ error: 'الرحلة غير موجودة' });
+    }
+
+    const pilgrims = await query(`
+      SELECT
+        id,
+        name_ar,
+        name_en,
+        passport_number,
+        visa_number,
+        nationality
+      FROM pilgrims
+      WHERE trip_id = ?
+      ORDER BY name_ar ASC
+    `, [tripId]);
+
+    res.json({
+      trip,
+      pilgrims
+    });
+  } catch (err) {
+    console.error('Get manifest error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
+});
+
+// Generate PDF manifest
+app.post('/api/trips/:tripId/manifest/pdf', authenticateToken, async (req, res) => {
+  try {
+    const { tripId } = req.params;
+
+    const trip = await queryGet('SELECT * FROM trips WHERE id = ?', [tripId]);
+
+    if (!trip) {
+      return res.status(404).json({ error: 'الرحلة غير موجودة' });
+    }
+
+    const pilgrims = await query(`
+      SELECT
+        id,
+        name_ar,
+        name_en,
+        passport_number,
+        visa_number,
+        nationality
+      FROM pilgrims
+      WHERE trip_id = ?
+      ORDER BY name_ar ASC
+    `, [tripId]);
+
+    const PdfPrinter = require('pdfmake');
+    const vfsFonts = require('pdfmake/build/vfs_fonts.js');
+
+    // Use built-in fonts (will work for English, Arabic may not render perfectly)
+    const fonts = {
+      Roboto: {
+        normal: 'Buffer',
+        bold: 'Buffer',
+        italics: 'Buffer',
+        bolditalics: 'Buffer'
+      }
+    };
+
+    const printer = new PdfPrinter(fonts);
+    const docDefinition = {
+      content: [
+        {
+          text: 'Al Madinah Hajj & Umrah Company',
+          style: 'header',
+          alignment: 'center'
+        },
+        {
+          text: `Passenger Manifest - ${trip.name}`,
+          style: 'subheader',
+          alignment: 'center',
+          margin: [0, 10, 0, 10]
+        },
+        {
+          text: `Date: ${trip.trip_date}`,
+          alignment: 'center',
+          margin: [0, 0, 0, 20]
+        },
+        {
+          table: {
+            headerRows: 1,
+            widths: ['auto', '*', '*', 'auto', 'auto', '*'],
+            body: [
+              [
+                { text: 'م', style: 'tableHeader' },
+                { text: 'اسم المعتمر بالعربي', style: 'tableHeader' },
+                { text: 'اسم المعتمر بالإنكليزي', style: 'tableHeader' },
+                { text: 'رقم الجواز', style: 'tableHeader' },
+                { text: 'رقم الفيزا', style: 'tableHeader' },
+                { text: 'الجنسية', style: 'tableHeader' }
+              ],
+              ...pilgrims.map((p, index) => [
+                index + 1,
+                p.name_ar || '-',
+                p.name_en || '-',
+                p.passport_number,
+                p.visa_number || '-',
+                p.nationality
+              ])
+            ]
+          },
+          layout: 'lightHorizontalLines'
+        },
+        {
+          text: `Total Passengers: ${pilgrims.length}`,
+          alignment: 'right',
+          margin: [0, 20, 0, 0],
+          style: 'footer'
+        }
+      ],
+      styles: {
+        header: {
+          fontSize: 18,
+          bold: true,
+          margin: [0, 0, 0, 10]
+        },
+        subheader: {
+          fontSize: 14,
+          bold: true
+        },
+        tableHeader: {
+          bold: true,
+          fontSize: 10,
+          color: 'black',
+          fillColor: '#eeeeee'
+        },
+        footer: {
+          fontSize: 10,
+          italics: true
+        }
+      },
+      defaultStyle: {
+        font: 'Roboto'
+      }
+    };
+
+    const pdfDoc = printer.createPdfKitDocument(docDefinition);
+    const chunks = [];
+
+    pdfDoc.on('data', chunk => chunks.push(chunk));
+    pdfDoc.on('end', () => {
+      const pdfBuffer = Buffer.concat(chunks);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename=manifest_${trip.name.replace(/\s+/g, '_')}.pdf`);
+      res.send(pdfBuffer);
+    });
+
+    pdfDoc.end();
+  } catch (err) {
+    console.error('PDF generation error:', err);
+    res.status(500).json({ error: 'Failed to generate PDF' });
   }
 });
 

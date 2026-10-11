@@ -5,6 +5,7 @@ import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Trips from './pages/Trips';
 import TripDetails from './pages/TripDetails';
+import PassengerManifest from './pages/PassengerManifest';
 import PilgrimDetail from './pages/PilgrimDetail';
 import Payments from './pages/Payments';
 import Reports from './pages/Reports';
@@ -31,6 +32,7 @@ function App() {
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="trips" element={<Trips />} />
             <Route path="trips/:id" element={<TripDetails />} />
+            <Route path="trips/:tripId/manifest" element={<PassengerManifest />} />
             <Route path="pilgrims/:id" element={<PilgrimDetail />} />
             <Route path="payments" element={<Payments />} />
             <Route path="reports" element={<Reports />} />

@@ -22,11 +22,17 @@ export interface Trip {
 export interface Pilgrim {
   id: number;
   trip_id: number;
-  full_name: string;
+  name_ar?: string;
+  name_en?: string;
+  full_name?: string;
   nationality: string;
   passport_number: string;
-  visa_number: string | null;
-  notes: string | null;
+  passport_expiry_date?: string;
+  date_of_birth?: string;
+  gender?: string;
+  visa_number?: string | null;
+  visa_document_path?: string | null;
+  notes?: string | null;
   created_at: string;
   updated_at: string;
   total_received?: number;

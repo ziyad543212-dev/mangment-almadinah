@@ -38,21 +38,58 @@ function initializeDatabase() {
       )
     `);
 
-    // Create Pilgrims table (updated with trip_id)
+    // Create Pilgrims table (updated with trip_id and new fields)
     db.run(`
       CREATE TABLE IF NOT EXISTS pilgrims (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         trip_id INTEGER NOT NULL,
-        full_name TEXT NOT NULL,
+        name_ar TEXT,
+        name_en TEXT,
         nationality TEXT NOT NULL,
         passport_number TEXT UNIQUE NOT NULL,
+        passport_expiry_date DATE,
+        date_of_birth DATE,
+        gender TEXT,
         visa_number TEXT,
+        visa_document_path TEXT,
         notes TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
       )
     `);
+
+    // Migrate existing pilgrims table - add new columns if they don't exist
+    db.run(`ALTER TABLE pilgrims ADD COLUMN name_ar TEXT`, (err) => {
+      if (err && !err.message.includes('duplicate column')) {
+        console.log('Column name_ar already exists or error:', err.message);
+      }
+    });
+    db.run(`ALTER TABLE pilgrims ADD COLUMN name_en TEXT`, (err) => {
+      if (err && !err.message.includes('duplicate column')) {
+        console.log('Column name_en already exists or error:', err.message);
+      }
+    });
+    db.run(`ALTER TABLE pilgrims ADD COLUMN passport_expiry_date DATE`, (err) => {
+      if (err && !err.message.includes('duplicate column')) {
+        console.log('Column passport_expiry_date already exists or error:', err.message);
+      }
+    });
+    db.run(`ALTER TABLE pilgrims ADD COLUMN date_of_birth DATE`, (err) => {
+      if (err && !err.message.includes('duplicate column')) {
+        console.log('Column date_of_birth already exists or error:', err.message);
+      }
+    });
+    db.run(`ALTER TABLE pilgrims ADD COLUMN gender TEXT`, (err) => {
+      if (err && !err.message.includes('duplicate column')) {
+        console.log('Column gender already exists or error:', err.message);
+      }
+    });
+    db.run(`ALTER TABLE pilgrims ADD COLUMN visa_document_path TEXT`, (err) => {
+      if (err && !err.message.includes('duplicate column')) {
+        console.log('Column visa_document_path already exists or error:', err.message);
+      }
+    });
 
     // Create Payments table (updated for USD and payment methods)
     db.run(`
@@ -86,7 +123,8 @@ function initializeDatabase() {
     db.run(`CREATE INDEX IF NOT EXISTS idx_passport_number ON pilgrims(passport_number)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_visa_number ON pilgrims(visa_number)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_nationality ON pilgrims(nationality)`);
-    db.run(`CREATE INDEX IF NOT EXISTS idx_full_name ON pilgrims(full_name)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_name_en ON pilgrims(name_en)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_name_ar ON pilgrims(name_ar)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_pilgrim_id ON payments(pilgrim_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_trip_id ON pilgrims(trip_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_trip_date ON trips(trip_date)`);
