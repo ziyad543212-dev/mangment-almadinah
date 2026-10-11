@@ -1,4 +1,7 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// Return COUNT(*) / BIGINT values as numbers instead of strings
+types.setTypeParser(20, (val) => parseInt(val, 10));
 
 // PostgreSQL connection pool
 const pool = new Pool({

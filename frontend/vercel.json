@@ -4,7 +4,10 @@
   "devCommand": "npm run dev",
   "installCommand": "npm install",
   "framework": "vite",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
   "env": {
-    "VITE_API_URL": "https://almadinah-backend.onrender.com"
+    "VITE_API_URL": "https://mangment-almadinah.onrender.com"
   }
 }

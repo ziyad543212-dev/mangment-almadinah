@@ -2,6 +2,7 @@ services:
   - type: web
     name: almadinah-backend
     env: node
+    rootDir: backend
     buildCommand: npm install
     startCommand: node src/server.js
     envVars:
