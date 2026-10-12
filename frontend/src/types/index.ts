@@ -60,6 +60,8 @@ export interface Payment {
   notes: string | null;
   created_at: string;
   cash_denominations?: CashDenomination[];
+  name_ar?: string;
+  name_en?: string;
   full_name?: string;
   nationality?: string;
   trip_name?: string;

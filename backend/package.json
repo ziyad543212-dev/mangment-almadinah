@@ -23,6 +23,8 @@
     "jsonwebtoken": "^9.0.2",
     "mrz": "^5.0.2",
     "multer": "^2.4.0",
+    "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^6.4.299",
     "pdfmake": "^0.3.11",
     "pg": "^8.23.1",
     "sqlite3": "^5.1.6",

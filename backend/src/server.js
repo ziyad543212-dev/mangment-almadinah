@@ -7,6 +7,7 @@ const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const Tesseract = require('tesseract.js');
 const { MRZ } = require('mrz');
+const pdfParse = require('pdf-parse');
 const db = require("./database");
 
 const { hashPassword, comparePassword, generateToken, authenticateToken } = require('./auth');
@@ -604,21 +605,97 @@ app.delete('/api/pilgrims/:id', authenticateToken, async (req, res) => {
 
 // ===== OCR ENDPOINTS =====
 
+// Helper function to extract text from PDF
+async function extractTextFromPDF(pdfPath) {
+  try {
+    const dataBuffer = fs.readFileSync(pdfPath);
+    const data = await pdfParse(dataBuffer);
+    return data.text;
+  } catch (error) {
+    console.error('PDF text extraction error:', error);
+    return null;
+  }
+}
+
+// Helper function to convert PDF first page to image (for scanned PDFs)
+async function convertPDFToImage(pdfPath) {
+  try {
+    // Note: This requires canvas which may not be available on all systems
+    // If canvas is not installed, this will return null and we'll rely on text extraction only
+    const { createCanvas } = await import('canvas');
+    const pdfjsLib = require('pdfjs-dist');
+    const dataBuffer = fs.readFileSync(pdfPath);
+    const loadingTask = pdfjsLib.getDocument(dataBuffer);
+    const pdf = await loadingTask.promise;
+    const page = await pdf.getPage(1);
+    const scale = 2.0;
+    const viewport = page.getViewport({ scale });
+
+    const canvas = createCanvas(viewport.width, viewport.height);
+    const context = canvas.getContext('2d');
+
+    await page.render({
+      canvasContext: context,
+      viewport: viewport
+    }).promise;
+
+    const imageBuffer = canvas.toBuffer('image/png');
+    return imageBuffer;
+  } catch (error) {
+    console.error('PDF to image conversion error (canvas not available):', error.message);
+    return null;
+  }
+}
+
 // Passport OCR endpoint
 app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No image file provided' });
+      return res.status(400).json({ error: 'No file provided' });
     }
 
-    const imagePath = req.file.path;
+    const filePath = req.file.path;
+    const fileExt = path.extname(req.file.originalname).toLowerCase();
+    let text = '';
+    let imageToOCR = null;
 
-    // Use Tesseract to extract text from passport
-    const { data: { text } } = await Tesseract.recognize(
-      imagePath,
-      'eng',
-      { logger: m => console.log(m) }
-    );
+    // Handle PDF files
+    if (fileExt === '.pdf') {
+      console.log('Processing PDF file for passport OCR');
+
+      // First try to extract text directly from PDF
+      const pdfText = await extractTextFromPDF(filePath);
+      if (pdfText && pdfText.trim().length > 50) {
+        text = pdfText;
+        console.log('Extracted text from PDF successfully');
+      } else {
+        // If text extraction fails or is minimal, convert to image and use OCR
+        console.log('PDF text extraction failed or minimal, converting to image for OCR');
+        imageToOCR = await convertPDFToImage(filePath);
+        if (imageToOCR) {
+          // Save converted image temporarily
+          const tempImagePath = filePath + '.png';
+          fs.writeFileSync(tempImagePath, imageToOCR);
+
+          // Perform OCR on the converted image
+          const ocrResult = await Tesseract.recognize(tempImagePath, 'eng', { logger: m => console.log(m) });
+          text = ocrResult.data.text;
+
+          // Clean up temp image
+          fs.unlinkSync(tempImagePath);
+        } else {
+          text = '';
+        }
+      }
+    } else {
+      // Handle image files
+      const { data: { text: ocrText } } = await Tesseract.recognize(
+        filePath,
+        'eng',
+        { logger: m => console.log(m) }
+      );
+      text = ocrText;
+    }
 
     // Parse MRZ (Machine Readable Zone) from the text
     const mrzLines = text.split('\n').filter(line => line.trim().length > 30);
@@ -656,7 +733,7 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
     }
 
     // Clean up uploaded file
-    fs.unlinkSync(imagePath);
+    fs.unlinkSync(filePath);
 
     res.json({
       success: true,
@@ -668,7 +745,7 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
     if (req.file && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
-    res.status(500).json({ error: 'Failed to process passport image' });
+    res.status(500).json({ error: 'Failed to process passport file' });
   }
 });
 
@@ -689,32 +766,82 @@ app.post('/api/upload/visa', authenticateToken, upload.single('visa'), async (re
     const visaPath = path.join(visasDir, req.file.filename);
     fs.renameSync(req.file.path, visaPath);
 
-    // Try to extract visa number using OCR
+    const fileExt = path.extname(req.file.originalname).toLowerCase();
     let visaNumber = null;
-    try {
-      const { data: { text } } = await Tesseract.recognize(
-        visaPath,
-        'eng',
-        { logger: m => console.log(m) }
-      );
 
-      // Try to find visa number pattern (various formats)
+    try {
+      let text = '';
+
+      // Handle PDF files
+      if (fileExt === '.pdf') {
+        console.log('Processing PDF file for visa extraction');
+
+        // First try to extract text directly from PDF
+        const pdfText = await extractTextFromPDF(visaPath);
+        if (pdfText && pdfText.trim().length > 10) {
+          text = pdfText;
+          console.log('Extracted text from PDF successfully');
+        } else {
+          // If text extraction fails, convert to image and use OCR
+          console.log('PDF text extraction failed, converting to image for OCR');
+          const imageBuffer = await convertPDFToImage(visaPath);
+          if (imageBuffer) {
+            const tempImagePath = visaPath + '.png';
+            fs.writeFileSync(tempImagePath, imageBuffer);
+
+            const ocrResult = await Tesseract.recognize(tempImagePath, 'eng', { logger: m => console.log(m) });
+            text = ocrResult.data.text;
+
+            fs.unlinkSync(tempImagePath);
+          }
+        }
+      } else {
+        // Handle image files
+        const { data: { text: ocrText } } = await Tesseract.recognize(
+          visaPath,
+          'eng',
+          { logger: m => console.log(m) }
+        );
+        text = ocrText;
+      }
+
+      // Try to find visa number pattern (various formats including Arabic)
       const visaPatterns = [
+        /رقم\s*التأشيرة[:\s]*([A-Z0-9]+)/i,
         /Visa\s*No[:\s]*([A-Z0-9]+)/i,
+        /Visa\s*Number[:\s]*([A-Z0-9]+)/i,
         /Number[:\s]*([A-Z0-9]+)/i,
+        /رقم\s*الفيزا[:\s]*([A-Z0-9]+)/i,
         /(\d{10,})/,
-        /([A-Z]{2}\d{6,})/
+        /([A-Z]{2}\d{6,})/,
+        /Border\s*No[:\s]*([A-Z0-9]+)/i
       ];
 
       for (const pattern of visaPatterns) {
         const match = text.match(pattern);
         if (match && match[1]) {
           visaNumber = match[1].trim();
+          console.log('Found visa number:', visaNumber);
+          break;
+        }
+      }
+
+      // Try to extract pilgrim name from PDF text
+      const namePatterns = [
+        /Name[:\s]*([A-Za-z\s]+)/i,
+        /الاسم[:\s]*([أ-ي\s]+)/i,
+        /Pilgrim\s*Name[:\s]*([A-Za-z\s]+)/i
+      ];
+
+      for (const pattern of namePatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+          console.log('Found name:', match[1].trim());
           break;
         }
       }
     } catch (ocrError) {
-      console.log('Visa OCR failed, user will need to enter visa number manually');
+      console.log('Visa extraction failed, user will need to enter visa number manually');
     }
 
     res.json({
@@ -742,7 +869,8 @@ app.get('/api/payments', authenticateToken, async (req, res) => {
     let sql = `
       SELECT
         pay.*,
-        p.full_name,
+        p.name_ar,
+        p.name_en,
         p.nationality,
         t.name as trip_name
       FROM payments pay
@@ -752,8 +880,8 @@ app.get('/api/payments', authenticateToken, async (req, res) => {
     const params = [];
 
     if (search) {
-      sql += ' WHERE p.full_name LIKE ? OR p.passport_number LIKE ?';
-      params.push(`%${search}%`, `%${search}%`);
+      sql += ' WHERE p.name_ar LIKE ? OR p.name_en LIKE ? OR p.passport_number LIKE ?';
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     sql += ' ORDER BY pay.payment_date DESC LIMIT $' + (params.length + 1) + ' OFFSET $' + (params.length + 2);
@@ -764,7 +892,7 @@ app.get('/api/payments', authenticateToken, async (req, res) => {
     // Get total count
     let countQuery = 'SELECT COUNT(*) as total FROM payments pay JOIN pilgrims p ON pay.pilgrim_id = p.id JOIN trips t ON p.trip_id = t.id';
     if (search) {
-      countQuery += ' WHERE p.full_name LIKE ? OR p.passport_number LIKE ?';
+      countQuery += ' WHERE p.name_ar LIKE ? OR p.name_en LIKE ? OR p.passport_number LIKE ?';
     }
 
     const countResult = await queryGet(countQuery, params.slice(0, -2));

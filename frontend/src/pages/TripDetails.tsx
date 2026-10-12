@@ -23,6 +23,7 @@ function TripDetails() {
   });
   const [scanningPassport, setScanningPassport] = useState(false);
   const [uploadingVisa, setUploadingVisa] = useState(false);
+  const [uploadedVisaFile, setUploadedVisaFile] = useState<File | null>(null);
   const [savingPilgrim, setSavingPilgrim] = useState(false);
 
   useEffect(() => {
@@ -67,6 +68,7 @@ function TripDetails() {
         visa_document_path: '',
         notes: '',
       });
+      setUploadedVisaFile(null);
       fetchTrip();
     } catch (error: any) {
       alert(error.response?.data?.error || 'حدث خطأ');
@@ -112,6 +114,7 @@ function TripDetails() {
     if (!file) return;
 
     setUploadingVisa(true);
+    setUploadedVisaFile(file);
     const formData = new FormData();
     formData.append('visa', file);
 
@@ -129,6 +132,7 @@ function TripDetails() {
       alert('تم رفع الفيزا بنجاح');
     } catch (error: any) {
       alert('فشل في رفع الفيزا');
+      setUploadedVisaFile(null);
     } finally {
       setUploadingVisa(false);
     }
@@ -440,11 +444,14 @@ function TripDetails() {
                   </label>
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/*,application/pdf"
                     onChange={handlePassportScan}
                     disabled={scanningPassport || savingPilgrim}
                     style={{ marginBottom: '0.5rem' }}
                   />
+                  <p style={{ fontSize: '0.75rem', color: '#666', margin: '0.25rem 0 0 0' }}>
+                    يدعم صور JPG, PNG وملفات PDF
+                  </p>
                   {scanningPassport && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#666' }}>
                       <span className="spinner" style={{ width: '16px', height: '16px' }}></span>
@@ -557,15 +564,37 @@ function TripDetails() {
                   </label>
                   <input
                     type="file"
-                    accept="image/*,.pdf"
+                    accept="image/*,application/pdf"
                     onChange={handleVisaUpload}
                     disabled={uploadingVisa || savingPilgrim}
                     style={{ marginBottom: '0.5rem' }}
                   />
+                  <p style={{ fontSize: '0.75rem', color: '#666', margin: '0.25rem 0 0 0' }}>
+                    يدعم صور JPG, PNG وملفات PDF
+                  </p>
                   {uploadingVisa && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#666' }}>
                       <span className="spinner" style={{ width: '16px', height: '16px' }}></span>
                       <span>جاري رفع الفيزا...</span>
+                    </div>
+                  )}
+                  {uploadedVisaFile && (
+                    <div style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: '#e9ecef', borderRadius: '4px' }}>
+                      {uploadedVisaFile.type === 'application/pdf' ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span style={{ fontSize: '1.5rem' }}>📄</span>
+                          <div>
+                            <div style={{ fontWeight: '600', fontSize: '0.875rem' }}>{uploadedVisaFile.name}</div>
+                            <div style={{ fontSize: '0.75rem', color: '#666' }}>ملف PDF</div>
+                          </div>
+                        </div>
+                      ) : (
+                        <img
+                          src={URL.createObjectURL(uploadedVisaFile)}
+                          alt="Visa preview"
+                          style={{ maxWidth: '100%', maxHeight: '200px', borderRadius: '4px' }}
+                        />
+                      )}
                     </div>
                   )}
                 </div>
