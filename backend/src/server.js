@@ -8,6 +8,7 @@ const sqlite3 = require('sqlite3').verbose();
 const Tesseract = require('tesseract.js');
 const { MRZ } = require('mrz');
 const pdfParse = require('pdf-parse');
+const sharp = require('sharp');
 const db = require("./database");
 
 const { hashPassword, comparePassword, generateToken, authenticateToken } = require('./auth');
@@ -610,11 +611,94 @@ async function extractTextFromPDF(pdfPath) {
   try {
     const dataBuffer = fs.readFileSync(pdfPath);
     const data = await pdfParse(dataBuffer);
+    console.log('PDF text extracted successfully, length:', data.text.length);
     return data.text;
   } catch (error) {
     console.error('PDF text extraction error:', error);
     return null;
   }
+}
+
+// Helper function to extract visa info from PDF text
+function extractVisaInfoFromText(text) {
+  const result = {
+    visaNumber: null,
+    passportNumber: null,
+    nameAr: null,
+    nameEn: null
+  };
+
+  // Visa number patterns (prioritize longer numbers)
+  const visaPatterns = [
+    /رقم\s*التأشيرة[:\s]*([0-9]{10,12})/i,
+    /Visa\s*Number[:\s]*([0-9]{10,12})/i,
+    /Visa\s*No[:\s]*([0-9]{10,12})/i,
+    /رقم\s*الفيزا[:\s]*([0-9]{10,12})/i,
+    /رقم\s*التأشيرة[:\s]*([0-9]+)/i,
+    /Visa\s*Number[:\s]*([0-9]+)/i,
+    /Visa\s*No[:\s]*([0-9]+)/i
+  ];
+
+  for (const pattern of visaPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      result.visaNumber = match[1].trim();
+      console.log('Found visa number:', result.visaNumber);
+      break;
+    }
+  }
+
+  // Passport number patterns
+  const passportPatterns = [
+    /رقم\s*الجواز[:\s]*([A-Z0-9]{6,10})/i,
+    /Passport\s*No[:\s]*([A-Z0-9]{6,10})/i,
+    /Passport\s*Number[:\s]*([A-Z0-9]{6,10})/i,
+    /رقم\s*الجواز[:\s]*([A-Z0-9]+)/i,
+    /Passport\s*No[:\s]*([A-Z0-9]+)/i
+  ];
+
+  for (const pattern of passportPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      result.passportNumber = match[1].trim();
+      console.log('Found passport number:', result.passportNumber);
+      break;
+    }
+  }
+
+  // Name patterns - Arabic
+  const nameArPatterns = [
+    /الاسم[:\s]*([أ-ي\s]+)/i,
+    /اسم\s*المعتمر[:\s]*([أ-ي\s]+)/i,
+    /Pilgrim\s*Name\s*\(Arabic\)[:\s]*([أ-ي\s]+)/i
+  ];
+
+  for (const pattern of nameArPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      result.nameAr = match[1].trim();
+      console.log('Found Arabic name:', result.nameAr);
+      break;
+    }
+  }
+
+  // Name patterns - English
+  const nameEnPatterns = [
+    /Name[:\s]*([A-Za-z\s]+)/i,
+    /Pilgrim\s*Name[:\s]*([A-Za-z\s]+)/i,
+    /اسم\s*المعتمر\s*\(الإنجليزي\)[:\s]*([A-Za-z\s]+)/i
+  ];
+
+  for (const pattern of nameEnPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      result.nameEn = match[1].trim();
+      console.log('Found English name:', result.nameEn);
+      break;
+    }
+  }
+
+  return result;
 }
 
 // Helper function to convert PDF first page to image (for scanned PDFs)
@@ -647,6 +731,36 @@ async function convertPDFToImage(pdfPath) {
   }
 }
 
+// Helper function to preprocess passport image for MRZ OCR
+async function preprocessPassportImage(imagePath) {
+  try {
+    const image = sharp(imagePath);
+    const metadata = await image.metadata();
+
+    // Crop bottom third of image (where MRZ is typically located)
+    const height = metadata.height;
+    const cropHeight = Math.floor(height / 3);
+    const cropY = height - cropHeight;
+
+    // Apply preprocessing: grayscale, increase contrast, threshold
+    const processedImage = await image
+      .extract({ left: 0, top: cropY, width: metadata.width, height: cropHeight })
+      .grayscale()
+      .normalize()
+      .threshold(128)
+      .toBuffer();
+
+    // Save processed image temporarily
+    const processedPath = imagePath + '.processed.png';
+    fs.writeFileSync(processedPath, processedImage);
+
+    return processedPath;
+  } catch (error) {
+    console.error('Image preprocessing error:', error);
+    return imagePath; // Return original if preprocessing fails
+  }
+}
+
 // Passport OCR endpoint
 app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (req, res) => {
   try {
@@ -657,7 +771,7 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
     const filePath = req.file.path;
     const fileExt = path.extname(req.file.originalname).toLowerCase();
     let text = '';
-    let imageToOCR = null;
+    let processedImagePath = null;
 
     // Handle PDF files
     if (fileExt === '.pdf') {
@@ -671,34 +785,53 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
       } else {
         // If text extraction fails or is minimal, convert to image and use OCR
         console.log('PDF text extraction failed or minimal, converting to image for OCR');
-        imageToOCR = await convertPDFToImage(filePath);
+        const imageToOCR = await convertPDFToImage(filePath);
         if (imageToOCR) {
           // Save converted image temporarily
           const tempImagePath = filePath + '.png';
           fs.writeFileSync(tempImagePath, imageToOCR);
 
-          // Perform OCR on the converted image
-          const ocrResult = await Tesseract.recognize(tempImagePath, 'eng', { logger: m => console.log(m) });
+          // Preprocess for MRZ
+          processedImagePath = await preprocessPassportImage(tempImagePath);
+
+          // Perform OCR on the processed image
+          const ocrResult = await Tesseract.recognize(processedImagePath, 'eng', { logger: m => console.log(m) });
           text = ocrResult.data.text;
 
-          // Clean up temp image
-          fs.unlinkSync(tempImagePath);
+          // Clean up temp images
+          if (fs.existsSync(tempImagePath)) fs.unlinkSync(tempImagePath);
+          if (fs.existsSync(processedImagePath) && processedImagePath !== tempImagePath) {
+            fs.unlinkSync(processedImagePath);
+          }
         } else {
           text = '';
         }
       }
     } else {
-      // Handle image files
-      const { data: { text: ocrText } } = await Tesseract.recognize(
-        filePath,
-        'eng',
-        { logger: m => console.log(m) }
-      );
-      text = ocrText;
+      // Handle image files - preprocess for MRZ
+      console.log('Processing image file for passport OCR with preprocessing');
+      processedImagePath = await preprocessPassportImage(filePath);
+
+      // Perform OCR on the processed image
+      const ocrResult = await Tesseract.recognize(processedImagePath, 'eng', { logger: m => console.log(m) });
+      text = ocrResult.data.text;
+
+      // Clean up processed image
+      if (fs.existsSync(processedImagePath) && processedImagePath !== filePath) {
+        fs.unlinkSync(processedImagePath);
+      }
     }
 
+    console.log('OCR text length:', text.length);
+    console.log('OCR text sample:', text.substring(0, 200));
+
     // Parse MRZ (Machine Readable Zone) from the text
-    const mrzLines = text.split('\n').filter(line => line.trim().length > 30);
+    const mrzLines = text.split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 30 && line.length < 45); // MRZ lines are typically 30-44 characters
+
+    console.log('Found MRZ lines:', mrzLines.length);
+
     let parsedData = {
       name_en: '',
       passport_number: '',
@@ -719,8 +852,9 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
           nationality: mrz.nationality,
           gender: mrz.sex
         };
+        console.log('MRZ parsed successfully:', parsedData);
       } catch (mrzError) {
-        console.log('MRZ parsing failed, using basic OCR text extraction');
+        console.log('MRZ parsing failed, using basic OCR text extraction:', mrzError.message);
         // Fallback: try to extract basic info from text
         const lines = text.split('\n');
         lines.forEach(line => {
@@ -730,22 +864,36 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
           }
         });
       }
+    } else {
+      console.warn('Insufficient MRZ lines found, attempting basic extraction');
+      // Try to find passport number directly
+      const passportMatch = text.match(/\b[A-Z]{1,2}\d{6,9}\b/);
+      if (passportMatch) {
+        parsedData.passport_number = passportMatch[0];
+      }
     }
 
     // Clean up uploaded file
     fs.unlinkSync(filePath);
 
+    const hasPartialData = Object.values(parsedData).some(v => v && v.length > 0);
+    const warning = !hasPartialData ? 'يرجى التأكد من البيانات أو إكمالها يدوياً' : null;
+
     res.json({
       success: true,
       data: parsedData,
-      raw_text: text
+      raw_text: text,
+      warning: warning
     });
   } catch (err) {
     console.error('Passport OCR error:', err);
     if (req.file && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
-    res.status(500).json({ error: 'Failed to process passport file' });
+    res.status(500).json({
+      error: 'Failed to process passport file',
+      warning: 'يرجى التأكد من البيانات أو إكمالها يدوياً'
+    });
   }
 });
 
@@ -767,87 +915,51 @@ app.post('/api/upload/visa', authenticateToken, upload.single('visa'), async (re
     fs.renameSync(req.file.path, visaPath);
 
     const fileExt = path.extname(req.file.originalname).toLowerCase();
-    let visaNumber = null;
+    let extractedData = {
+      visaNumber: null,
+      passportNumber: null,
+      nameAr: null,
+      nameEn: null
+    };
 
     try {
-      let text = '';
-
-      // Handle PDF files
+      // Handle PDF files - use direct text extraction only
       if (fileExt === '.pdf') {
-        console.log('Processing PDF file for visa extraction');
+        console.log('Processing PDF file for visa extraction (direct text only)');
 
-        // First try to extract text directly from PDF
         const pdfText = await extractTextFromPDF(visaPath);
         if (pdfText && pdfText.trim().length > 10) {
-          text = pdfText;
-          console.log('Extracted text from PDF successfully');
+          console.log('PDF text extracted, length:', pdfText.length);
+          extractedData = extractVisaInfoFromText(pdfText);
         } else {
-          // If text extraction fails, convert to image and use OCR
-          console.log('PDF text extraction failed, converting to image for OCR');
-          const imageBuffer = await convertPDFToImage(visaPath);
-          if (imageBuffer) {
-            const tempImagePath = visaPath + '.png';
-            fs.writeFileSync(tempImagePath, imageBuffer);
-
-            const ocrResult = await Tesseract.recognize(tempImagePath, 'eng', { logger: m => console.log(m) });
-            text = ocrResult.data.text;
-
-            fs.unlinkSync(tempImagePath);
-          }
+          console.warn('PDF text extraction returned minimal or no text');
         }
       } else {
-        // Handle image files
-        const { data: { text: ocrText } } = await Tesseract.recognize(
+        // Handle image files - use OCR
+        console.log('Processing image file for visa extraction (OCR)');
+        const { data: { text } } = await Tesseract.recognize(
           visaPath,
           'eng',
           { logger: m => console.log(m) }
         );
-        text = ocrText;
+        console.log('OCR text extracted, length:', text.length);
+        extractedData = extractVisaInfoFromText(text);
       }
 
-      // Try to find visa number pattern (various formats including Arabic)
-      const visaPatterns = [
-        /رقم\s*التأشيرة[:\s]*([A-Z0-9]+)/i,
-        /Visa\s*No[:\s]*([A-Z0-9]+)/i,
-        /Visa\s*Number[:\s]*([A-Z0-9]+)/i,
-        /Number[:\s]*([A-Z0-9]+)/i,
-        /رقم\s*الفيزا[:\s]*([A-Z0-9]+)/i,
-        /(\d{10,})/,
-        /([A-Z]{2}\d{6,})/,
-        /Border\s*No[:\s]*([A-Z0-9]+)/i
-      ];
-
-      for (const pattern of visaPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-          visaNumber = match[1].trim();
-          console.log('Found visa number:', visaNumber);
-          break;
-        }
-      }
-
-      // Try to extract pilgrim name from PDF text
-      const namePatterns = [
-        /Name[:\s]*([A-Za-z\s]+)/i,
-        /الاسم[:\s]*([أ-ي\s]+)/i,
-        /Pilgrim\s*Name[:\s]*([A-Za-z\s]+)/i
-      ];
-
-      for (const pattern of namePatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-          console.log('Found name:', match[1].trim());
-          break;
-        }
-      }
+      console.log('Extracted visa data:', extractedData);
     } catch (ocrError) {
-      console.log('Visa extraction failed, user will need to enter visa number manually');
+      console.error('Visa extraction error:', ocrError);
+      // Don't fail the upload, just return the file path
     }
 
     res.json({
       success: true,
       visa_document_path: req.file.filename,
-      visa_number: visaNumber
+      visa_number: extractedData.visaNumber,
+      passport_number: extractedData.passportNumber,
+      name_ar: extractedData.nameAr,
+      name_en: extractedData.nameEn,
+      warning: !extractedData.visaNumber ? 'يرجى التأكد من البيانات أو إكمالها يدوياً' : null
     });
   } catch (err) {
     console.error('Visa upload error:', err);

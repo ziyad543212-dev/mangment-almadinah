@@ -101,9 +101,15 @@ function TripDetails() {
         gender: data.gender || pilgrimFormData.gender,
       });
 
-      alert('تم استخراج البيانات من جواز السفر بنجاح. يرجى مراجعة وتصحيح البيانات.');
+      // Show warning if extraction failed or returned partial data
+      if (response.data.warning) {
+        alert(response.data.warning);
+      } else {
+        alert('تم استخراج البيانات من جواز السفر بنجاح. يرجى مراجعة وتصحيح البيانات.');
+      }
     } catch (error: any) {
-      alert('فشل في قراءة جواز السفر. يرجى إدخال البيانات يدويًا.');
+      const errorMsg = error.response?.data?.warning || error.response?.data?.error || 'فشل في قراءة جواز السفر. يرجى إدخال البيانات يدويًا.';
+      alert(errorMsg);
     } finally {
       setScanningPassport(false);
     }
@@ -129,7 +135,23 @@ function TripDetails() {
         visa_number: response.data.visa_number || pilgrimFormData.visa_number,
       });
 
-      alert('تم رفع الفيزا بنجاح');
+      // Auto-fill other fields if available
+      if (response.data.name_ar) {
+        setPilgrimFormData(prev => ({ ...prev, name_ar: response.data.name_ar }));
+      }
+      if (response.data.name_en) {
+        setPilgrimFormData(prev => ({ ...prev, name_en: response.data.name_en }));
+      }
+      if (response.data.passport_number) {
+        setPilgrimFormData(prev => ({ ...prev, passport_number: response.data.passport_number }));
+      }
+
+      // Show warning if extraction failed
+      if (response.data.warning) {
+        alert(response.data.warning);
+      } else {
+        alert('تم رفع الفيزا بنجاح');
+      }
     } catch (error: any) {
       alert('فشل في رفع الفيزا');
       setUploadedVisaFile(null);
