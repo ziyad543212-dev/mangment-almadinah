@@ -69,19 +69,39 @@ function queryRun(sql, params = []) {
 // Login
 app.post('/api/auth/login', async (req, res) => {
   try {
+    console.log('=== Login Attempt ===');
+    console.log('Request body:', { username: req.body.username, password: req.body.password ? '***' : 'missing' });
+    
     const { username, password } = req.body;
 
     if (!username || !password) {
+      console.warn('Login failed: Missing username or password');
       return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
     }
 
+    console.log('Querying user:', username);
     const user = await queryGet('SELECT * FROM users WHERE username = $1', [username]);
+    console.log('User found:', !!user);
 
-    if (!user || !comparePassword(password, user.password_hash)) {
+    if (!user) {
+      console.warn('Login failed: User not found');
       return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
     }
 
+    console.log('Comparing password for user:', username);
+    const passwordMatch = comparePassword(password, user.password_hash);
+    console.log('Password match:', passwordMatch);
+
+    if (!passwordMatch) {
+      console.warn('Login failed: Incorrect password');
+      return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+    }
+
+    console.log('Generating token for user:', username);
     const token = generateToken(user);
+    console.log('Token generated successfully');
+    
+    console.log('=== Login Successful ===');
     res.json({
       token,
       user: {
@@ -91,7 +111,11 @@ app.post('/api/auth/login', async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('Login error:', err);
+    console.error('=== Login Error ===');
+    console.error('Error details:', err);
+    console.error('Error message:', err.message);
+    console.error('Error stack:', err.stack);
+    console.error('====================');
     res.status(500).json({ error: 'خطأ في الخادم' });
   }
 });

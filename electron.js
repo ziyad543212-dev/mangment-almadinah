@@ -75,7 +75,11 @@ function startBackend() {
   backendProcess = spawn('node', ['src/server.js'], {
     cwd: backendPath,
     shell: true,
-    env: { ...process.env, NODE_ENV: 'production' },
+    env: { 
+      ...process.env, 
+      NODE_ENV: 'production',
+      PORT: '3001'  // Explicitly set port to match frontend config
+    },
     detached: false
   });
 

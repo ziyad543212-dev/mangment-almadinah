@@ -2,10 +2,12 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const db = require('./database');
 
-// Use a persistent JWT secret - never change this in production without invalidating all tokens
-const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-key-in-production-123456789';
+// Use a persistent JWT secret with guaranteed fallback
+// This ensures the backend never crashes if .env is missing
+const JWT_SECRET = process.env.JWT_SECRET || 'almadinah_secure_fallback_secret_key_2024';
 
-console.log('JWT_SECRET configured:', JWT_SECRET ? 'Yes' : 'No (using default)');
+console.log('JWT_SECRET configured:', JWT_SECRET ? 'Yes' : 'No (using default fallback)');
+console.log('JWT_SECRET source:', process.env.JWT_SECRET ? 'Environment variable' : 'Fallback constant');
 
 function hashPassword(password) {
   return bcrypt.hashSync(password, 10);

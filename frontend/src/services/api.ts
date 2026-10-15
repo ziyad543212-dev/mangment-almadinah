@@ -1,19 +1,24 @@
 import axios from 'axios';
 
 // Detect if running in Electron
-// Electron has a 'process' object on the window in the renderer process
+// Check for file:// protocol (used by Electron packaged apps)
+// or check for window.process (development Electron)
 const isElectron = typeof window !== 'undefined' && 
-                   (window as any).process && 
-                   (window as any).process.type === 'renderer';
+                   (window.location.protocol === 'file:' || 
+                    ((window as any).process && (window as any).process.type === 'renderer'));
 
-// In Electron, always use localhost for the embedded backend
+// Force localhost for Electron - completely ignore environment variables
 // In web development, use environment variable or fallback to localhost
 const API_BASE_URL = isElectron 
   ? 'http://localhost:3001' 
   : (import.meta.env.VITE_API_URL || 'http://localhost:3001');
 
-console.log('Running in Electron:', isElectron);
+console.log('=== API Configuration ===');
+console.log('window.location.protocol:', window.location.protocol);
+console.log('window.process:', (window as any).process);
+console.log('isElectron:', isElectron);
 console.log('API Base URL:', API_BASE_URL);
+console.log('==========================');
 
 const api = axios.create({
   baseURL: API_BASE_URL,
