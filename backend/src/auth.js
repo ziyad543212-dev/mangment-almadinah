@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const db = require('./database');
 
 // Use a persistent JWT secret - never change this in production without invalidating all tokens
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-key-in-production-123456789';
@@ -52,14 +53,39 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'الرجاء تسجيل الدخول' });
   }
 
-  const decoded = verifyToken(token);
-  if (!decoded) {
-    console.warn('Invalid or expired token');
-    return res.status(403).json({ error: 'رمز المصادقة غير صالح' });
-  }
+  try {
+    const decoded = verifyToken(token);
+    if (!decoded) {
+      console.warn('Invalid or expired token');
+      return res.status(403).json({ error: 'رمز المصادقة غير صالح' });
+    }
 
-  req.user = decoded;
-  next();
+    // Verify user still exists in database
+    db.get('SELECT id, username, role FROM users WHERE id = ?', [decoded.id], (err, user) => {
+      if (err) {
+        console.error('Database error verifying user:', err);
+        return res.status(500).json({ error: 'خطأ في الخادم' });
+      }
+
+      if (!user) {
+        console.warn('User no longer exists in database:', decoded.username);
+        return res.status(401).json({ error: 'المستخدم غير موجود' });
+      }
+
+      // Attach fresh user data to request
+      req.user = {
+        id: user.id,
+        username: user.username,
+        role: user.role
+      };
+
+      console.log('User authenticated:', user.username);
+      next();
+    });
+  } catch (error) {
+    console.error('Authentication error:', error);
+    return res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 }
 
 module.exports = {
