@@ -16,7 +16,7 @@ const { hashPassword, comparePassword, generateToken, authenticateToken } = requ
 const app = express();
 const PORT = process.env.PORT || 3001;
 const HOST = '0.0.0.0';
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..');
+const DATA_DIR = db.dataDir;
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const allowedOrigins = new Set([
   'http://localhost:5173',
@@ -108,7 +108,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     console.log('Querying user:', username);
-    const user = await queryGet('SELECT * FROM users WHERE username = $1', [username]);
+    const user = await queryGet('SELECT * FROM users WHERE username = ?', [username]);
     console.log('User found:', !!user);
 
     if (!user) {
@@ -138,12 +138,8 @@ app.post('/api/auth/login', async (req, res) => {
         role: user.role
       }
     });
-  } catch (err) {
-    console.error('=== Login Error ===');
-    console.error('Error details:', err);
-    console.error('Error message:', err.message);
-    console.error('Error stack:', err.stack);
-    console.error('====================');
+  } catch (error) {
+    console.error('Login error details:', error);
     res.status(500).json({ error: 'خطأ في الخادم' });
   }
 });
@@ -159,6 +155,11 @@ app.post('/api/auth/setup-admin', async (req, res) => {
 
     if (password.length < 6) {
       return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
+    }
+
+    const users = await queryGet('SELECT COUNT(*) AS count FROM users');
+    if (users.count > 0) {
+      return res.status(409).json({ error: 'تم إعداد حساب المسؤول مسبقاً' });
     }
 
     const passwordHash = hashPassword(password);
@@ -1543,6 +1544,16 @@ app.get('/api/reports/trips', authenticateToken, async (req, res) => {
   }
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`Server running on http://${HOST}:${PORT}`);
-});
+db.ready
+  .then(() => {
+    app.listen(PORT, HOST, () => {
+      console.log(`Server running on http://${HOST}:${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error('Database initialization failed; server will not start:', error);
+    db.close((closeError) => {
+      if (closeError) console.error('Database close error:', closeError);
+      process.exitCode = 1;
+    });
+  });

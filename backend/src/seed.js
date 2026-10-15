@@ -1,25 +1,10 @@
 require('dotenv').config();
 const db = require('./database');
-const { hashPassword } = require('./auth');
 
-console.log('Seeding database...');
+db.ready.then(() => {
+  console.log('Seeding sample data...');
 
-// Create admin user
-const adminPassword = hashPassword('admin123');
-db.run(
-  'INSERT OR IGNORE INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-  ['admin', adminPassword, 'admin'],
-  (err) => {
-    if (err) {
-      console.error('Error creating admin user:', err);
-    } else {
-      console.log('Admin user created (username: admin, password: admin123)');
-    }
-  }
-);
-
-// Create sample trips
-const trips = [
+  const trips = [
   {
     name: 'رحلة رمضان الأولى',
     trip_date: '2024-03-15',
@@ -30,7 +15,7 @@ const trips = [
     trip_date: '2024-04-01',
     notes: 'رحلة رمضان الثانية للعمرة'
   }
-];
+  ];
 
 let tripCounter = 0;
 trips.forEach((trip, index) => {
@@ -151,13 +136,17 @@ function addPilgrimsToTrips() {
   });
 }
 
-console.log('Seeding completed!');
-console.log('Default admin credentials:');
-console.log('Username: admin');
-console.log('Password: admin123');
-console.log('Please change these credentials in production!');
+  console.log('Sample data seeding completed.');
 
-setTimeout(() => {
-  db.close();
-  process.exit(0);
-}, 3000);
+  setTimeout(() => {
+    db.close((error) => {
+      if (error) {
+        console.error('Error closing database:', error);
+        process.exitCode = 1;
+      }
+    });
+  }, 3000);
+}).catch((error) => {
+  console.error('Seeding failed:', error);
+  process.exitCode = 1;
+});

@@ -1,24 +1,71 @@
 const sqlite3 = require('sqlite3').verbose();
+const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
 
-const dataDir = process.env.DATA_DIR || path.join(__dirname, '..');
+const configuredDataDir = process.env.DATA_DIR?.trim();
+const dataDir = configuredDataDir && configuredDataDir !== '.'
+  ? path.resolve(configuredDataDir)
+  : path.resolve(__dirname, '..');
 const dbPath = path.join(dataDir, 'database.sqlite');
 
 fs.mkdirSync(dataDir, { recursive: true });
 
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) {
-    console.error('Error opening database:', err.message);
-  } else {
-    initializeDatabase();
-  }
+let resolveReady;
+let rejectReady;
+const ready = new Promise((resolve, reject) => {
+  resolveReady = resolve;
+  rejectReady = reject;
 });
 
-function initializeDatabase() {
-  db.serialize(() => {
-    // Create Users table
-    db.run(`
+const db = new sqlite3.Database(dbPath, (error) => {
+  if (error) {
+    rejectReady(error);
+    return;
+  }
+
+  initializeDatabase().then(resolveReady, rejectReady);
+});
+db.ready = ready;
+db.dataDir = dataDir;
+
+function run(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (error) {
+      if (error) reject(error);
+      else resolve(this);
+    });
+  });
+}
+
+function get(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (error, row) => {
+      if (error) reject(error);
+      else resolve(row);
+    });
+  });
+}
+
+function all(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (error, rows) => {
+      if (error) reject(error);
+      else resolve(rows);
+    });
+  });
+}
+
+async function ensureColumn(table, column, definition) {
+  const columns = await all(`PRAGMA table_info(${table})`);
+  if (!columns.some((item) => item.name === column)) {
+    await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+async function initializeDatabase() {
+  try {
+    await run(`
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
@@ -27,13 +74,10 @@ function initializeDatabase() {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
-    `, (err) => {
-      if (err) console.error('Error creating users table:', err);
-      else console.log('Users table created or verified');
-    });
+    `);
+    await ensureColumn('users', 'role', "TEXT DEFAULT 'admin'");
 
-    // Create Trips table
-    db.run(`
+    await run(`
       CREATE TABLE IF NOT EXISTS trips (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -43,13 +87,9 @@ function initializeDatabase() {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
-    `, (err) => {
-      if (err) console.error('Error creating trips table:', err);
-      else console.log('Trips table created or verified');
-    });
+    `);
 
-    // Create Pilgrims table (updated with trip_id and new fields)
-    db.run(`
+    await run(`
       CREATE TABLE IF NOT EXISTS pilgrims (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         trip_id INTEGER NOT NULL,
@@ -67,19 +107,15 @@ function initializeDatabase() {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
       )
-    `, (err) => {
-      if (err) console.error('Error creating pilgrims table:', err);
-      else {
-        console.log('Pilgrims table created or verified');
-        // Run migrations synchronously before creating indexes
-        runPilgrimMigrationsSync();
-        // Then create indexes
-        createIndexes();
-      }
-    });
+    `);
+    await ensureColumn('pilgrims', 'name_ar', 'TEXT');
+    await ensureColumn('pilgrims', 'name_en', 'TEXT');
+    await ensureColumn('pilgrims', 'passport_expiry_date', 'DATE');
+    await ensureColumn('pilgrims', 'date_of_birth', 'DATE');
+    await ensureColumn('pilgrims', 'gender', 'TEXT');
+    await ensureColumn('pilgrims', 'visa_document_path', 'TEXT');
 
-    // Create Payments table (updated for USD and payment methods)
-    db.run(`
+    await run(`
       CREATE TABLE IF NOT EXISTS payments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         pilgrim_id INTEGER NOT NULL,
@@ -91,13 +127,9 @@ function initializeDatabase() {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (pilgrim_id) REFERENCES pilgrims(id) ON DELETE CASCADE
       )
-    `, (err) => {
-      if (err) console.error('Error creating payments table:', err);
-      else console.log('Payments table created or verified');
-    });
+    `);
 
-    // Create CashPaymentDenominations table
-    db.run(`
+    await run(`
       CREATE TABLE IF NOT EXISTS cash_payment_denominations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         payment_id INTEGER NOT NULL,
@@ -107,57 +139,59 @@ function initializeDatabase() {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE CASCADE
       )
-    `, (err) => {
-      if (err) console.error('Error creating cash_payment_denominations table:', err);
-      else console.log('CashPaymentDenominations table created or verified');
-    });
-  });
+    `);
+
+    const indexes = [
+      'CREATE INDEX IF NOT EXISTS idx_passport_number ON pilgrims(passport_number)',
+      'CREATE INDEX IF NOT EXISTS idx_visa_number ON pilgrims(visa_number)',
+      'CREATE INDEX IF NOT EXISTS idx_nationality ON pilgrims(nationality)',
+      'CREATE INDEX IF NOT EXISTS idx_name_en ON pilgrims(name_en)',
+      'CREATE INDEX IF NOT EXISTS idx_name_ar ON pilgrims(name_ar)',
+      'CREATE INDEX IF NOT EXISTS idx_pilgrim_id ON payments(pilgrim_id)',
+      'CREATE INDEX IF NOT EXISTS idx_trip_id ON pilgrims(trip_id)',
+      'CREATE INDEX IF NOT EXISTS idx_trip_date ON trips(trip_date)',
+      'CREATE INDEX IF NOT EXISTS idx_payment_id ON cash_payment_denominations(payment_id)'
+    ];
+
+    for (const index of indexes) {
+      await run(index);
+    }
+
+    await seedInitialAdmin();
+    console.log(`Database initialized at ${dbPath}`);
+  } catch (error) {
+    console.error('Database initialization failed:', error);
+    throw error;
+  }
 }
 
-function runPilgrimMigrationsSync() {
-  const migrations = [
-    { sql: 'ALTER TABLE pilgrims ADD COLUMN name_ar TEXT', name: 'name_ar' },
-    { sql: 'ALTER TABLE pilgrims ADD COLUMN name_en TEXT', name: 'name_en' },
-    { sql: 'ALTER TABLE pilgrims ADD COLUMN passport_expiry_date DATE', name: 'passport_expiry_date' },
-    { sql: 'ALTER TABLE pilgrims ADD COLUMN date_of_birth DATE', name: 'date_of_birth' },
-    { sql: 'ALTER TABLE pilgrims ADD COLUMN gender TEXT', name: 'gender' },
-    { sql: 'ALTER TABLE pilgrims ADD COLUMN visa_document_path TEXT', name: 'visa_document_path' }
-  ];
+async function seedInitialAdmin() {
+  const userCount = await get('SELECT COUNT(*) AS count FROM users');
+  if (userCount.count > 0) return;
 
-  migrations.forEach((migration) => {
-    db.run(migration.sql, (err) => {
-      if (err) {
-        if (err.message.includes('duplicate column')) {
-          console.log(`Column ${migration.name} already exists`);
-        } else {
-          console.error(`Error adding column ${migration.name}:`, err.message);
-        }
-      } else {
-        console.log(`Column ${migration.name} added successfully`);
-      }
-    });
-  });
-}
+  const username = process.env.INITIAL_ADMIN_USERNAME?.trim() || 'admin';
+  const password = process.env.INITIAL_ADMIN_PASSWORD;
 
-function createIndexes() {
-  const indexes = [
-    'CREATE INDEX IF NOT EXISTS idx_passport_number ON pilgrims(passport_number)',
-    'CREATE INDEX IF NOT EXISTS idx_visa_number ON pilgrims(visa_number)',
-    'CREATE INDEX IF NOT EXISTS idx_nationality ON pilgrims(nationality)',
-    'CREATE INDEX IF NOT EXISTS idx_name_en ON pilgrims(name_en)',
-    'CREATE INDEX IF NOT EXISTS idx_name_ar ON pilgrims(name_ar)',
-    'CREATE INDEX IF NOT EXISTS idx_pilgrim_id ON payments(pilgrim_id)',
-    'CREATE INDEX IF NOT EXISTS idx_trip_id ON pilgrims(trip_id)',
-    'CREATE INDEX IF NOT EXISTS idx_trip_date ON trips(trip_date)',
-    'CREATE INDEX IF NOT EXISTS idx_payment_id ON cash_payment_denominations(payment_id)'
-  ];
+  if (!password) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'INITIAL_ADMIN_PASSWORD must be configured before starting with an empty production database'
+      );
+    }
 
-  indexes.forEach((indexSql, index) => {
-    db.run(indexSql, (err) => {
-      if (err) console.error(`Error creating index ${index}:`, err);
-      else console.log(`Index ${index} created or verified`);
-    });
-  });
+    console.warn('No users exist. Set INITIAL_ADMIN_USERNAME and INITIAL_ADMIN_PASSWORD to seed an admin.');
+    return;
+  }
+
+  if (password.length < 12) {
+    throw new Error('INITIAL_ADMIN_PASSWORD must be at least 12 characters long');
+  }
+
+  await run(
+    'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
+    [username, bcrypt.hashSync(password, 10), 'admin']
+  );
+  console.log(`Initial admin user "${username}" created.`);
 }
 
 module.exports = db;

@@ -15,6 +15,10 @@ services:
         value: production
       - key: JWT_SECRET
         generateValue: true
+      - key: INITIAL_ADMIN_USERNAME
+        value: admin
+      - key: INITIAL_ADMIN_PASSWORD
+        generateValue: true
       - key: DATA_DIR
         value: /var/data
       - key: ALLOWED_ORIGINS

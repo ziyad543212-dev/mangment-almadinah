@@ -11,7 +11,7 @@ The backend uses SQLite and local file uploads. The Render blueprint mounts a pe
 1. Create a Render **Web Service** from this repository.
 2. Set **Root Directory** to `backend`, **Build Command** to `npm install`, and **Start Command** to `npm start`.
 3. Attach a persistent disk mounted at `/var/data` (the supplied `render.yaml` requests a 1 GB disk).
-4. Set `NODE_ENV=production`, a strong unique `JWT_SECRET`, `DATA_DIR=/var/data`, and `ALLOWED_ORIGINS` to your Vercel origin(s), comma-separated. `PORT` is supplied by Render; the server also defaults to `3001` locally.
+4. Set `NODE_ENV=production`, a strong unique `JWT_SECRET`, `DATA_DIR=/var/data`, `INITIAL_ADMIN_USERNAME=admin`, `INITIAL_ADMIN_PASSWORD` (at least 12 characters), and `ALLOWED_ORIGINS` to your Vercel origin(s), comma-separated. The Render blueprint generates a unique initial admin password. `PORT` is supplied by Render; the server also defaults to `3001` locally.
 5. Set the Render health check path to `/api/health`. The server listens on `0.0.0.0`.
 6. After the first deploy, verify `https://<your-service>.onrender.com/api/health` returns `{"status":"ok"}`.
 
@@ -29,7 +29,7 @@ The rewrite makes the deployed browser requests same-origin; CORS is configured 
 
 ## Backend environment and persistence
 
-For the backend host, set `NODE_ENV=production` and a unique `JWT_SECRET`. The included `render.yaml` generates a secret for Render; the app now refuses to start in production if the variable is missing. Keep secrets out of source control. Local variable names are listed in [backend/.env.example](./backend/.env.example).
+For the backend host, set `NODE_ENV=production`, a unique `JWT_SECRET`, and an `INITIAL_ADMIN_PASSWORD`. The included `render.yaml` generates both secrets. On first startup with an empty database, the backend creates the configured initial admin with a hashed password; subsequent restarts do not reset credentials. If a production database has no users and no initial admin password is configured, startup fails with a clear error instead of serving a broken login endpoint. Keep secrets out of source control. Local variable names are listed in [backend/.env.example](./backend/.env.example).
 
 The active backend stores data in SQLite and writes uploaded documents to its `uploads` directory. The supplied Render blueprint puts both on the persistent disk. If creating the service manually, attach and verify the disk before accepting production data; an ephemeral filesystem does not preserve user data.
 
@@ -78,7 +78,7 @@ Alternatively, connect the repository to Vercel once and push to the configured 
 ## Deployment checklist
 
 - [ ] Commit and push the changes to GitHub.
-- [ ] Create the Render Web Service with root `backend`, build `npm install`, start `npm start`, persistent disk mount `/var/data`, and environment variables `NODE_ENV`, `JWT_SECRET`, `DATA_DIR`, and `ALLOWED_ORIGINS`.
+- [ ] Create the Render Web Service with root `backend`, build `npm install`, start `npm start`, persistent disk mount `/var/data`, and environment variables `NODE_ENV`, `JWT_SECRET`, `INITIAL_ADMIN_USERNAME`, `INITIAL_ADMIN_PASSWORD`, `DATA_DIR`, and `ALLOWED_ORIGINS`.
 - [ ] Verify the Render `/api/health` endpoint.
 - [ ] Replace the Vercel URL placeholder in `frontend/vercel.json` with the assigned Render hostname.
 - [ ] Set Vercel's root to `frontend`, then deploy using Git integration or `npx vercel --prod`.
@@ -86,19 +86,6 @@ Alternatively, connect the repository to Vercel once and push to the configured 
 
 ## First-user setup and smoke test
 
-After confirming that the backend has durable storage, create the initial administrator once by sending a JSON `POST` to:
+On the first production startup, the configured initial admin is seeded automatically if the database has no users. In Render, retrieve the generated `INITIAL_ADMIN_PASSWORD` from the service's environment settings, then sign in as `admin`. Change the password after signing in. Do not use the development seed script in production.
 
-```text
-https://<your-service>.onrender.com/api/auth/setup-admin
-```
-
-Example body:
-
-```json
-{
-  "username": "admin",
-  "password": "choose-a-strong-password"
-}
-```
-
-Verify the Vercel site loads directly on a nested route (for example `/trips`) and that logging in sends API requests to `/api/...` on the Vercel hostname. Do not call the setup endpoint again after creating the administrator.
+Verify the Vercel site loads directly on a nested route (for example `/trips`) and that logging in sends API requests to `/api/...` on the Vercel hostname.
