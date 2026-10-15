@@ -6,7 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const Tesseract = require('tesseract.js');
-const { MRZ } = require('mrz');
+const mrz = require('mrz');
 const pdfParse = require('pdf-parse');
 const sharp = require('sharp');
 const db = require("./database");
@@ -15,18 +15,46 @@ const { hashPassword, comparePassword, generateToken, authenticateToken } = requ
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const HOST = '0.0.0.0';
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..');
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+const allowedOrigins = new Set([
+  'http://localhost:5173',
+  'http://localhost:3000',
+  ...(process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+]);
 
-app.use(cors());
+app.use(cors({
+  origin(origin, callback) {
+    let isVercelOrigin = false;
+    if (origin) {
+      try {
+        const url = new URL(origin);
+        isVercelOrigin = url.protocol === 'https:' && url.hostname.endsWith('.vercel.app');
+      } catch {
+        isVercelOrigin = false;
+      }
+    }
+
+    callback(null, !origin || allowedOrigins.has(origin) || isVercelOrigin);
+  }
+}));
 app.use(express.json());
+
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../uploads');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
+    if (!fs.existsSync(UPLOAD_DIR)) {
+      fs.mkdirSync(UPLOAD_DIR, { recursive: true });
     }
-    cb(null, uploadDir);
+    cb(null, UPLOAD_DIR);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -755,33 +783,134 @@ async function convertPDFToImage(pdfPath) {
   }
 }
 
+// Helper function to convert MRZ date format (YYMMDD) to ISO format (YYYY-MM-DD)
+function convertMRZDate(mrzDate) {
+  if (!mrzDate || mrzDate.length !== 6) {
+    return '';
+  }
+  
+  const year = parseInt(mrzDate.substring(0, 2));
+  const month = mrzDate.substring(2, 4);
+  const day = mrzDate.substring(4, 6);
+  
+  // Determine century - if year >= 50, assume 1900s, else 2000s
+  const fullYear = year >= 50 ? 1900 + year : 2000 + year;
+  
+  return `${fullYear}-${month}-${day}`;
+}
+
+// Helper function to convert MRZ date format (YYMMDD) to ISO format (YYYY-MM-DD)
+function convertMRZDate(mrzDate) {
+  if (!mrzDate || mrzDate.length !== 6) {
+    return '';
+  }
+  
+  const year = parseInt(mrzDate.substring(0, 2));
+  const month = mrzDate.substring(2, 4);
+  const day = mrzDate.substring(4, 6);
+  
+  // Determine century - if year >= 50, assume 1900s, else 2000s
+  const fullYear = year >= 50 ? 1900 + year : 2000 + year;
+  
+  return `${fullYear}-${month}-${day}`;
+}
+
 // Helper function to preprocess passport image for MRZ OCR
 async function preprocessPassportImage(imagePath) {
   try {
     const image = sharp(imagePath);
     const metadata = await image.metadata();
 
+    console.log('Image metadata:', metadata);
+
     // Crop bottom third of image (where MRZ is typically located)
     const height = metadata.height;
     const cropHeight = Math.floor(height / 3);
     const cropY = height - cropHeight;
 
-    // Apply preprocessing: grayscale, increase contrast, threshold
+    console.log(`Cropping: y=${cropY}, height=${cropHeight} from total height=${height}`);
+
+    // Apply improved preprocessing: grayscale, enhance contrast, sharpen
     const processedImage = await image
       .extract({ left: 0, top: cropY, width: metadata.width, height: cropHeight })
       .grayscale()
       .normalize()
-      .threshold(128)
+      .sharpen()
+      .linear() // Better contrast adjustment
       .toBuffer();
 
     // Save processed image temporarily
     const processedPath = imagePath + '.processed.png';
     fs.writeFileSync(processedPath, processedImage);
 
+    console.log('Preprocessed image saved to:', processedPath);
     return processedPath;
   } catch (error) {
     console.error('Image preprocessing error:', error);
     return imagePath; // Return original if preprocessing fails
+  }
+}
+
+// Helper function to sanitize and validate MRZ lines
+function sanitizeMRZLines(text) {
+  const lines = text.split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 30); // Filter out very short lines
+
+  // Clean up OCR errors: replace common confusions
+  const cleanLines = lines.map(line => {
+    // Remove all characters except alphanumerics and <
+    let cleaned = line.replace(/[^A-Z0-9<]/g, '');
+    // Fix common OCR confusions
+    cleaned = cleaned.replace(/O/g, '0'); // O -> 0
+    cleaned = cleaned.replace(/I/g, '1'); // I -> 1
+    cleaned = cleaned.replace(/S/g, '5'); // S -> 5
+    cleaned = cleaned.replace(/Z/g, '2'); // Z -> 2
+    return cleaned;
+  });
+
+  return cleanLines;
+}
+
+// Helper function to try parsing MRZ with error handling
+function parseMRZText(mrzText) {
+  try {
+    console.log('Attempting to parse MRZ text:', mrzText.substring(0, 100));
+    
+    // Split by newline and sanitize
+    const lines = sanitizeMRZLines(mrzText);
+    console.log('Sanitized MRZ lines:', lines.length);
+    
+    if (lines.length < 2) {
+      console.warn('Insufficient MRZ lines for parsing');
+      return null;
+    }
+
+    // Try to find valid TD3 format (2 lines, 44 chars each)
+    const td3Lines = lines.filter(line => line.length === 44);
+    if (td3Lines.length >= 2) {
+      console.log('Found TD3 format lines');
+      const mrzString = td3Lines.slice(0, 2).join('\n');
+      const parsed = mrz.parse(mrzString);
+      console.log('MRZ parsed successfully:', parsed);
+      return parsed;
+    }
+
+    // Try with top 2 longest lines
+    const sortedLines = lines.sort((a, b) => b.length - a.length);
+    if (sortedLines.length >= 2) {
+      console.log('Using top 2 longest lines');
+      const mrzString = sortedLines.slice(0, 2).join('\n');
+      const parsed = mrz.parse(mrzString);
+      console.log('MRZ parsed successfully:', parsed);
+      return parsed;
+    }
+
+    console.warn('Could not find valid MRZ format');
+    return null;
+  } catch (error) {
+    console.error('MRZ parsing error:', error.message);
+    return null;
   }
 }
 
@@ -850,12 +979,6 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
     console.log('OCR text sample:', text.substring(0, 200));
 
     // Parse MRZ (Machine Readable Zone) from the text
-    const mrzLines = text.split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 30 && line.length < 45); // MRZ lines are typically 30-44 characters
-
-    console.log('Found MRZ lines:', mrzLines.length);
-
     let parsedData = {
       name_en: '',
       passport_number: '',
@@ -865,36 +988,30 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
       gender: ''
     };
 
-    if (mrzLines.length >= 2) {
-      try {
-        const mrz = new MRZ(mrzLines.join('\n'));
-        parsedData = {
-          name_en: mrz.secondaryIdentifier + ' ' + mrz.primaryIdentifier,
-          passport_number: mrz.documentNumber,
-          date_of_birth: mrz.birthDate,
-          passport_expiry_date: mrz.expirationDate,
-          nationality: mrz.nationality,
-          gender: mrz.sex
-        };
-        console.log('MRZ parsed successfully:', parsedData);
-      } catch (mrzError) {
-        console.log('MRZ parsing failed, using basic OCR text extraction:', mrzError.message);
-        // Fallback: try to extract basic info from text
-        const lines = text.split('\n');
-        lines.forEach(line => {
-          if (line.includes('PN') || line.match(/\b[A-Z]{1,2}\d{6,9}\b/)) {
-            const match = line.match(/\b[A-Z]{1,2}\d{6,9}\b/);
-            if (match) parsedData.passport_number = match[0];
-          }
-        });
-      }
+    // Try to parse MRZ using the new parsing function
+    const mrzResult = parseMRZText(text);
+    
+    if (mrzResult) {
+      // Extract data from parsed MRZ
+      parsedData = {
+        name_en: `${mrzResult.fields.lastName || ''} ${mrzResult.fields.firstName || ''}`.trim(),
+        passport_number: mrzResult.fields.documentNumber || '',
+        date_of_birth: convertMRZDate(mrzResult.fields.birthDate || ''),
+        passport_expiry_date: convertMRZDate(mrzResult.fields.expirationDate || ''),
+        nationality: mrzResult.fields.nationality || '',
+        gender: mrzResult.fields.sex || ''
+      };
+      console.log('MRZ parsed successfully:', parsedData);
     } else {
-      console.warn('Insufficient MRZ lines found, attempting basic extraction');
-      // Try to find passport number directly
-      const passportMatch = text.match(/\b[A-Z]{1,2}\d{6,9}\b/);
-      if (passportMatch) {
-        parsedData.passport_number = passportMatch[0];
-      }
+      console.warn('MRZ parsing failed, attempting basic extraction');
+      // Fallback: try to extract basic info from text
+      const lines = text.split('\n');
+      lines.forEach(line => {
+        if (line.includes('PN') || line.match(/\b[A-Z]{1,2}\d{6,9}\b/)) {
+          const match = line.match(/\b[A-Z]{1,2}\d{6,9}\b/);
+          if (match) parsedData.passport_number = match[0];
+        }
+      });
     }
 
     // Clean up uploaded file
@@ -929,7 +1046,7 @@ app.post('/api/upload/visa', authenticateToken, upload.single('visa'), async (re
     }
 
     // Create visas directory if it doesn't exist
-    const visasDir = path.join(__dirname, '../uploads/visas');
+    const visasDir = path.join(UPLOAD_DIR, 'visas');
     if (!fs.existsSync(visasDir)) {
       fs.mkdirSync(visasDir, { recursive: true });
     }
@@ -1101,8 +1218,8 @@ app.delete('/api/payments/:id', authenticateToken, async (req, res) => {
 // Export database backup
 app.get('/api/backup/export', authenticateToken, async (req, res) => {
   try {
-    const dbPath = path.join(__dirname, '../database.sqlite');
-    const backupPath = path.join(__dirname, `../backup_${new Date().toISOString().split('T')[0]}.sqlite`);
+    const dbPath = path.join(DATA_DIR, 'database.sqlite');
+    const backupPath = path.join(DATA_DIR, `backup_${new Date().toISOString().split('T')[0]}.sqlite`);
 
     // Copy database file
     fs.copyFileSync(dbPath, backupPath);
@@ -1127,7 +1244,7 @@ app.post('/api/backup/restore', authenticateToken, upload.single('backup'), asyn
       return res.status(400).json({ error: 'No backup file provided' });
     }
 
-    const dbPath = path.join(__dirname, '../database.sqlite');
+    const dbPath = path.join(DATA_DIR, 'database.sqlite');
     const backupPath = req.file.path;
 
     // Close current database connection
@@ -1329,6 +1446,103 @@ app.post('/api/trips/:tripId/manifest/pdf', authenticateToken, async (req, res) 
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// ===== REPORTS ENDPOINTS =====
+
+// Get summary statistics
+app.get('/api/reports/summary', authenticateToken, async (req, res) => {
+  try {
+    const { startDate, endDate, nationality, tripId } = req.query;
+    
+    let whereClause = 'WHERE 1=1';
+    const params = [];
+    
+    if (startDate) {
+      whereClause += ' AND t.trip_date >= ?';
+      params.push(startDate);
+    }
+    if (endDate) {
+      whereClause += ' AND t.trip_date <= ?';
+      params.push(endDate);
+    }
+    if (nationality) {
+      whereClause += ' AND p.nationality = ?';
+      params.push(nationality);
+    }
+    if (tripId) {
+      whereClause += ' AND p.trip_id = ?';
+      params.push(tripId);
+    }
+
+    // Get summary statistics
+    const summary = await query(`
+      SELECT 
+        COUNT(DISTINCT t.id) as total_trips,
+        COUNT(p.id) as total_pilgrims,
+        COALESCE(SUM(t.trip_cost_usd), 0) as total_trip_cost,
+        COALESCE(SUM(pay.amount_usd), 0) as total_received,
+        COALESCE(SUM(t.trip_cost_usd) - COALESCE(SUM(pay.amount_usd), 0), 0) as total_outstanding,
+        COALESCE(SUM(t.trip_cost_usd) - COALESCE(SUM(pay.amount_usd), 0), 0) as net_total,
+        COUNT(DISTINCT CASE WHEN pay.id IS NOT NULL THEN p.id END) as with_payments,
+        COUNT(DISTINCT CASE WHEN pay.id IS NULL THEN p.id END) as without_payments,
+        COALESCE(SUM(CASE WHEN pay.payment_method = 'نقدًا' THEN pay.amount_usd ELSE 0 END), 0) as cash_total,
+        COALESCE(SUM(CASE WHEN pay.payment_method = 'شام كاش' THEN pay.amount_usd ELSE 0 END), 0) as sham_cash_total
+      FROM trips t
+      LEFT JOIN pilgrims p ON t.id = p.trip_id
+      LEFT JOIN payments pay ON p.id = pay.pilgrim_id
+      ${whereClause}
+    `, params);
+
+    res.json(summary[0] || {
+      total_trips: 0,
+      total_pilgrims: 0,
+      total_trip_cost: 0,
+      total_received: 0,
+      total_outstanding: 0,
+      net_total: 0,
+      with_payments: 0,
+      without_payments: 0,
+      cash_total: 0,
+      sham_cash_total: 0
+    });
+  } catch (err) {
+    console.error('Reports summary error:', err);
+    res.status(500).json({ error: 'خطأ في جلب ملخص التقارير' });
+  }
+});
+
+// Get nationalities breakdown
+app.get('/api/reports/nationalities', authenticateToken, async (req, res) => {
+  try {
+    const nationalities = await query(`
+      SELECT nationality, COUNT(*) as count
+      FROM pilgrims
+      GROUP BY nationality
+      ORDER BY count DESC
+    `);
+
+    res.json(nationalities);
+  } catch (err) {
+    console.error('Nationalities error:', err);
+    res.status(500).json({ error: 'خطأ في جلب الجنسيات' });
+  }
+});
+
+// Get trips for reports
+app.get('/api/reports/trips', authenticateToken, async (req, res) => {
+  try {
+    const trips = await query(`
+      SELECT id, name, trip_date
+      FROM trips
+      ORDER BY trip_date DESC
+    `);
+
+    res.json(trips);
+  } catch (err) {
+    console.error('Trips error:', err);
+    res.status(500).json({ error: 'خطأ في جلب الرحلات' });
+  }
+});
+
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
 });

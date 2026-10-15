@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 
 function Reports() {
+  const navigate = useNavigate();
   const [summary, setSummary] = useState<any>(null);
   const [nationalities, setNationalities] = useState<any[]>([]);
   const [trips, setTrips] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [filters, setFilters] = useState({
     startDate: '',
     endDate: '',
@@ -14,11 +17,18 @@ function Reports() {
   });
 
   useEffect(() => {
+    // Check if token exists before fetching
+    const token = localStorage.getItem('token');
+    if (!token) {
+      navigate('/login');
+      return;
+    }
     fetchReports();
-  }, [filters]);
+  }, [filters, navigate]);
 
   const fetchReports = async () => {
     setLoading(true);
+    setError('');
     try {
       const params = new URLSearchParams();
       if (filters.startDate) params.append('startDate', filters.startDate);
@@ -35,8 +45,16 @@ function Reports() {
       setSummary(summaryRes.data);
       setNationalities(nationalitiesRes.data);
       setTrips(tripsRes.data);
-    } catch (error) {
-      alert('حدث خطأ في تحميل البيانات');
+    } catch (error: any) {
+      console.error('Error fetching reports:', error);
+      if (error.response?.status === 401 || error.response?.status === 403) {
+        // Token invalid, redirect to login
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        navigate('/login');
+      } else {
+        setError('حدث خطأ في تحميل البيانات. يرجى المحاولة مرة أخرى.');
+      }
     } finally {
       setLoading(false);
     }
@@ -74,6 +92,19 @@ function Reports() {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}>
         <div className="spinner" style={{ width: '40px', height: '40px' }}></div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '3rem' }}>
+        <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>⚠️</div>
+        <h2 style={{ color: '#dc3545', marginBottom: '1rem' }}>خطأ في تحميل البيانات</h2>
+        <p style={{ color: '#666', marginBottom: '1rem' }}>{error}</p>
+        <button onClick={fetchReports} className="btn btn-primary">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

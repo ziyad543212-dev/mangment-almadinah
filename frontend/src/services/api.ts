@@ -8,10 +8,10 @@ const isElectron = typeof window !== 'undefined' &&
                     ((window as any).process && (window as any).process.type === 'renderer'));
 
 // Force localhost for Electron - completely ignore environment variables
-// In web development, use environment variable or fallback to localhost
+// In web deployments, use the same-origin /api rewrite unless explicitly overridden.
 const API_BASE_URL = isElectron 
   ? 'http://localhost:3001' 
-  : (import.meta.env.VITE_API_URL || 'http://localhost:3001');
+  : (import.meta.env.VITE_API_URL || '');
 
 console.log('=== API Configuration ===');
 console.log('window.location.protocol:', window.location.protocol);
