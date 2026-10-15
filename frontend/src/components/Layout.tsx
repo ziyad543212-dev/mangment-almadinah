@@ -1,6 +1,7 @@
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { authService } from '../services/auth';
 import { useTheme } from '../contexts/ThemeContext';
+import LogoPng from '/Logo.png';
 
 function Layout() {
   const location = useLocation();
@@ -48,7 +49,7 @@ function Layout() {
           }}
         >
           <img
-            src="/Logo.png"
+            src={LogoPng}
             alt="شركة المدينة للحج والعمرة"
             style={{
               width: '80px',

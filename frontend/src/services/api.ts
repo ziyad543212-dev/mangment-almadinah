@@ -1,10 +1,18 @@
 import axios from 'axios';
 
-// Use environment variable or fallback to localhost
-// In development, this will proxy to backend
-// In production (Electron), the backend runs locally
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// Detect if running in Electron
+// Electron has a 'process' object on the window in the renderer process
+const isElectron = typeof window !== 'undefined' && 
+                   (window as any).process && 
+                   (window as any).process.type === 'renderer';
 
+// In Electron, always use localhost for the embedded backend
+// In web development, use environment variable or fallback to localhost
+const API_BASE_URL = isElectron 
+  ? 'http://localhost:3001' 
+  : (import.meta.env.VITE_API_URL || 'http://localhost:3001');
+
+console.log('Running in Electron:', isElectron);
 console.log('API Base URL:', API_BASE_URL);
 
 const api = axios.create({

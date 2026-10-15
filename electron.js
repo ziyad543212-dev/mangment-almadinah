@@ -138,10 +138,12 @@ app.whenReady().then(() => {
   console.log('App is ready');
   startBackend();
   
-  // Wait a moment for backend to start before creating window
+  // Wait for backend to be ready before creating window
+  // Increased timeout to ensure backend has time to start and initialize database
   setTimeout(() => {
+    console.log('Creating window after backend startup delay');
     createWindow();
-  }, 2000);
+  }, 5000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
