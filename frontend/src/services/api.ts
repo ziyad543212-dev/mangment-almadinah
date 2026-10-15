@@ -11,7 +11,7 @@ const isElectron = typeof window !== 'undefined' &&
 // In web deployments, use the same-origin /api rewrite unless explicitly overridden.
 const API_BASE_URL = isElectron 
   ? 'http://localhost:3001' 
-  : (import.meta.env.VITE_API_URL || '');
+  : (import.meta.env.VITE_API_URL || 'https://mangment-almadinah-2.onrender.com');
 
 console.log('=== API Configuration ===');
 console.log('window.location.protocol:', window.location.protocol);
