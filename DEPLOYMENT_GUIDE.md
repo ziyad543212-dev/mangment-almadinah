@@ -33,6 +33,8 @@ For the backend host, set `NODE_ENV=production`, a unique `JWT_SECRET`, and an `
 
 The active backend stores data in SQLite and writes uploaded documents to its `uploads` directory. The supplied Render blueprint puts both on the persistent disk. If creating the service manually, attach and verify the disk before accepting production data; an ephemeral filesystem does not preserve user data.
 
+Passport and visa image extraction uses the `tesseract.js` OCR package and the `mrz` parser; no Gemini or other API key is required. Tesseract downloads its English and Arabic language data from jsDelivr on first use and caches it under `DATA_DIR/tesseract-cache`, so the service needs outbound access to that CDN and the mounted data disk must be writable. Text-based PDFs are parsed directly. Scanned passport PDFs additionally require the optional `canvas` package, which is not currently included; upload a passport image or text-based PDF unless that support is added.
+
 ## Local development and Vercel CLI
 
 Install dependencies once from each app directory if needed:

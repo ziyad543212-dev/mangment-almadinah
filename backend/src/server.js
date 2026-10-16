@@ -18,6 +18,9 @@ const PORT = process.env.PORT || 3001;
 const HOST = '0.0.0.0';
 const DATA_DIR = db.dataDir;
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+const OCR_CACHE_DIR = path.join(DATA_DIR, 'tesseract-cache');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(OCR_CACHE_DIR, { recursive: true });
 const allowedOrigins = new Set([
   'http://localhost:5173',
   'http://localhost:3000',
@@ -51,10 +54,12 @@ app.get('/api/health', (req, res) => {
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    if (!fs.existsSync(UPLOAD_DIR)) {
+    try {
       fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+      cb(null, UPLOAD_DIR);
+    } catch (error) {
+      cb(error);
     }
-    cb(null, UPLOAD_DIR);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -63,6 +68,36 @@ const storage = multer.diskStorage({
 });
 
 const upload = multer({ storage: storage });
+
+function handleUpload(uploadMiddleware, label) {
+  return (req, res, next) => {
+    uploadMiddleware(req, res, (error) => {
+      if (!error) {
+        next();
+        return;
+      }
+
+      console.error(`${label} upload error details:`, error);
+      const status = error instanceof multer.MulterError ? 400 : 500;
+      res.status(status).json({
+        error: status === 400 ? 'Invalid upload' : 'Upload failed'
+      });
+    });
+  };
+}
+
+function cleanupTempFile(filePath, label) {
+  if (!filePath || !fs.existsSync(filePath)) return;
+
+  try {
+    fs.unlinkSync(filePath);
+  } catch (error) {
+    console.error(`${label} temporary file cleanup error:`, error);
+  }
+}
+
+const passportUpload = handleUpload(upload.single('image'), 'Passport');
+const visaUpload = handleUpload(upload.single('visa'), 'Visa');
 
 // Helper function to convert callback-based queries to promises
 function query(sql, params = []) {
@@ -696,7 +731,7 @@ function extractVisaInfoFromText(text) {
     const match = text.match(pattern);
     if (match && match[1]) {
       result.visaNumber = match[1].trim();
-      console.log('Found visa number:', result.visaNumber);
+      console.log('Visa number detected.');
       break;
     }
   }
@@ -714,7 +749,7 @@ function extractVisaInfoFromText(text) {
     const match = text.match(pattern);
     if (match && match[1]) {
       result.passportNumber = match[1].trim();
-      console.log('Found passport number:', result.passportNumber);
+      console.log('Passport number detected in visa.');
       break;
     }
   }
@@ -730,7 +765,7 @@ function extractVisaInfoFromText(text) {
     const match = text.match(pattern);
     if (match && match[1]) {
       result.nameAr = match[1].trim();
-      console.log('Found Arabic name:', result.nameAr);
+      console.log('Arabic name detected in visa.');
       break;
     }
   }
@@ -746,7 +781,7 @@ function extractVisaInfoFromText(text) {
     const match = text.match(pattern);
     if (match && match[1]) {
       result.nameEn = match[1].trim();
-      console.log('Found English name:', result.nameEn);
+      console.log('English name detected in visa.');
       break;
     }
   }
@@ -779,7 +814,7 @@ async function convertPDFToImage(pdfPath) {
     const imageBuffer = canvas.toBuffer('image/png');
     return imageBuffer;
   } catch (error) {
-    console.error('PDF to image conversion error (canvas not available):', error.message);
+    console.error('PDF to image conversion error (canvas support is required for scanned PDFs):', error);
     return null;
   }
 }
@@ -876,11 +911,9 @@ function sanitizeMRZLines(text) {
 // Helper function to try parsing MRZ with error handling
 function parseMRZText(mrzText) {
   try {
-    console.log('Attempting to parse MRZ text:', mrzText.substring(0, 100));
-    
     // Split by newline and sanitize
     const lines = sanitizeMRZLines(mrzText);
-    console.log('Sanitized MRZ lines:', lines.length);
+    console.log('Passport MRZ candidate lines:', lines.length);
     
     if (lines.length < 2) {
       console.warn('Insufficient MRZ lines for parsing');
@@ -890,33 +923,35 @@ function parseMRZText(mrzText) {
     // Try to find valid TD3 format (2 lines, 44 chars each)
     const td3Lines = lines.filter(line => line.length === 44);
     if (td3Lines.length >= 2) {
-      console.log('Found TD3 format lines');
       const mrzString = td3Lines.slice(0, 2).join('\n');
       const parsed = mrz.parse(mrzString);
-      console.log('MRZ parsed successfully:', parsed);
+      console.log('Passport MRZ parsed:', { format: parsed.format, valid: parsed.valid });
       return parsed;
     }
 
     // Try with top 2 longest lines
     const sortedLines = lines.sort((a, b) => b.length - a.length);
     if (sortedLines.length >= 2) {
-      console.log('Using top 2 longest lines');
       const mrzString = sortedLines.slice(0, 2).join('\n');
       const parsed = mrz.parse(mrzString);
-      console.log('MRZ parsed successfully:', parsed);
+      console.log('Passport MRZ parsed:', { format: parsed.format, valid: parsed.valid });
       return parsed;
     }
 
     console.warn('Could not find valid MRZ format');
     return null;
   } catch (error) {
-    console.error('MRZ parsing error:', error.message);
+    console.error('Passport MRZ parsing error:', error);
     return null;
   }
 }
 
 // Passport OCR endpoint
-app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (req, res) => {
+app.post('/api/ocr/passport', authenticateToken, passportUpload, async (req, res) => {
+  let processingStage = 'request validation';
+  let processedImagePath = null;
+  let tempImagePath = null;
+
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file provided' });
@@ -925,10 +960,15 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
     const filePath = req.file.path;
     const fileExt = path.extname(req.file.originalname).toLowerCase();
     let text = '';
-    let processedImagePath = null;
+    console.log('Passport scan received:', {
+      extension: fileExt,
+      sizeBytes: req.file.size,
+      mimeType: req.file.mimetype
+    });
 
     // Handle PDF files
     if (fileExt === '.pdf') {
+      processingStage = 'PDF text extraction';
       console.log('Processing PDF file for passport OCR');
 
       // First try to extract text directly from PDF
@@ -938,46 +978,45 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
         console.log('Extracted text from PDF successfully');
       } else {
         // If text extraction fails or is minimal, convert to image and use OCR
+        processingStage = 'scanned PDF conversion';
         console.log('PDF text extraction failed or minimal, converting to image for OCR');
         const imageToOCR = await convertPDFToImage(filePath);
         if (imageToOCR) {
           // Save converted image temporarily
-          const tempImagePath = filePath + '.png';
+          tempImagePath = filePath + '.png';
           fs.writeFileSync(tempImagePath, imageToOCR);
 
           // Preprocess for MRZ
           processedImagePath = await preprocessPassportImage(tempImagePath);
 
           // Perform OCR on the processed image
-          const ocrResult = await Tesseract.recognize(processedImagePath, 'eng', { logger: m => console.log(m) });
+          processingStage = 'passport OCR';
+          const ocrResult = await Tesseract.recognize(processedImagePath, 'eng', {
+            cachePath: OCR_CACHE_DIR,
+            logger: (message) => console.log('Passport OCR progress:', message.status, message.progress)
+          });
           text = ocrResult.data.text;
-
-          // Clean up temp images
-          if (fs.existsSync(tempImagePath)) fs.unlinkSync(tempImagePath);
-          if (fs.existsSync(processedImagePath) && processedImagePath !== tempImagePath) {
-            fs.unlinkSync(processedImagePath);
-          }
         } else {
-          text = '';
+          throw new Error('Scanned passport PDF has no extractable text and PDF-to-image support is unavailable');
         }
       }
     } else {
       // Handle image files - preprocess for MRZ
+      processingStage = 'passport image preprocessing';
       console.log('Processing image file for passport OCR with preprocessing');
       processedImagePath = await preprocessPassportImage(filePath);
 
       // Perform OCR on the processed image
-      const ocrResult = await Tesseract.recognize(processedImagePath, 'eng', { logger: m => console.log(m) });
+      processingStage = 'passport OCR';
+      const ocrResult = await Tesseract.recognize(processedImagePath, 'eng', {
+        cachePath: OCR_CACHE_DIR,
+        logger: (message) => console.log('Passport OCR progress:', message.status, message.progress)
+      });
       text = ocrResult.data.text;
-
-      // Clean up processed image
-      if (fs.existsSync(processedImagePath) && processedImagePath !== filePath) {
-        fs.unlinkSync(processedImagePath);
-      }
     }
 
-    console.log('OCR text length:', text.length);
-    console.log('OCR text sample:', text.substring(0, 200));
+    processingStage = 'passport MRZ parsing';
+    console.log('Passport OCR completed; extracted character count:', text.length);
 
     // Parse MRZ (Machine Readable Zone) from the text
     let parsedData = {
@@ -1002,7 +1041,7 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
         nationality: mrzResult.fields.nationality || '',
         gender: mrzResult.fields.sex || ''
       };
-      console.log('MRZ parsed successfully:', parsedData);
+      console.log('Passport fields parsed from MRZ.');
     } else {
       console.warn('MRZ parsing failed, attempting basic extraction');
       // Fallback: try to extract basic info from text
@@ -1015,9 +1054,6 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
       });
     }
 
-    // Clean up uploaded file
-    fs.unlinkSync(filePath);
-
     const hasPartialData = Object.values(parsedData).some(v => v && v.length > 0);
     const warning = !hasPartialData ? 'يرجى التأكد من البيانات أو إكمالها يدوياً' : null;
 
@@ -1027,20 +1063,24 @@ app.post('/api/ocr/passport', authenticateToken, upload.single('image'), async (
       raw_text: text,
       warning: warning
     });
-  } catch (err) {
-    console.error('Passport OCR error:', err);
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
+  } catch (error) {
+    console.error(`Passport scan failed during ${processingStage}:`, error);
     res.status(500).json({
       error: 'Failed to process passport file',
       warning: 'يرجى التأكد من البيانات أو إكمالها يدوياً'
     });
+  } finally {
+    if (req.file) cleanupTempFile(req.file.path, 'Passport');
+    cleanupTempFile(processedImagePath, 'Passport');
+    cleanupTempFile(tempImagePath, 'Passport');
   }
 });
 
 // eVisa upload endpoint
-app.post('/api/upload/visa', authenticateToken, upload.single('visa'), async (req, res) => {
+app.post('/api/upload/visa', authenticateToken, visaUpload, async (req, res) => {
+  let processingStage = 'request validation';
+  let visaPath = null;
+
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No visa file provided' });
@@ -1048,12 +1088,10 @@ app.post('/api/upload/visa', authenticateToken, upload.single('visa'), async (re
 
     // Create visas directory if it doesn't exist
     const visasDir = path.join(UPLOAD_DIR, 'visas');
-    if (!fs.existsSync(visasDir)) {
-      fs.mkdirSync(visasDir, { recursive: true });
-    }
+    fs.mkdirSync(visasDir, { recursive: true });
 
     // Move file to visas directory
-    const visaPath = path.join(visasDir, req.file.filename);
+    visaPath = path.join(visasDir, req.file.filename);
     fs.renameSync(req.file.path, visaPath);
 
     const fileExt = path.extname(req.file.originalname).toLowerCase();
@@ -1067,6 +1105,7 @@ app.post('/api/upload/visa', authenticateToken, upload.single('visa'), async (re
     try {
       // Handle PDF files - use direct text extraction only
       if (fileExt === '.pdf') {
+        processingStage = 'visa PDF text extraction';
         console.log('Processing PDF file for visa extraction (direct text only)');
 
         const pdfText = await extractTextFromPDF(visaPath);
@@ -1074,24 +1113,31 @@ app.post('/api/upload/visa', authenticateToken, upload.single('visa'), async (re
           console.log('PDF text extracted, length:', pdfText.length);
           extractedData = extractVisaInfoFromText(pdfText);
         } else {
-          console.warn('PDF text extraction returned minimal or no text');
+          console.warn('Visa PDF has no extractable text; scanned PDFs need OCR from an image upload.');
+          extractedData.extractionError = true;
         }
       } else {
         // Handle image files - use OCR
+        processingStage = 'visa OCR';
         console.log('Processing image file for visa extraction (OCR)');
         const { data: { text } } = await Tesseract.recognize(
           visaPath,
-          'eng',
-          { logger: m => console.log(m) }
+          'eng+ara',
+          {
+            cachePath: OCR_CACHE_DIR,
+            logger: (message) => console.log('Visa OCR progress:', message.status, message.progress)
+          }
         );
-        console.log('OCR text extracted, length:', text.length);
+        console.log('Visa OCR completed; extracted character count:', text.length);
         extractedData = extractVisaInfoFromText(text);
       }
 
-      console.log('Extracted visa data:', extractedData);
-    } catch (ocrError) {
-      console.error('Visa extraction error:', ocrError);
-      // Don't fail the upload, just return the file path
+      console.log('Visa fields detected:', Object.fromEntries(
+        Object.entries(extractedData).map(([key, value]) => [key, Boolean(value)])
+      ));
+    } catch (error) {
+      console.error(`Visa extraction failed during ${processingStage}:`, error);
+      extractedData.extractionError = true;
     }
 
     res.json({
@@ -1101,13 +1147,13 @@ app.post('/api/upload/visa', authenticateToken, upload.single('visa'), async (re
       passport_number: extractedData.passportNumber,
       name_ar: extractedData.nameAr,
       name_en: extractedData.nameEn,
-      warning: !extractedData.visaNumber ? 'يرجى التأكد من البيانات أو إكمالها يدوياً' : null
+      warning: extractedData.extractionError || !extractedData.visaNumber
+        ? 'تعذر استخراج البيانات تلقائياً، يرجى التأكد منها أو إدخالها يدوياً'
+        : null
     });
-  } catch (err) {
-    console.error('Visa upload error:', err);
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
+  } catch (error) {
+    console.error(`Visa upload failed during ${processingStage}:`, error);
+    if (req.file) cleanupTempFile(req.file.path, 'Visa');
     res.status(500).json({ error: 'Failed to upload visa' });
   }
 });
