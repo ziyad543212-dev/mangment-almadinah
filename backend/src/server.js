@@ -950,23 +950,11 @@ async function preprocessPassportImage(imagePath) {
 
 // Helper function to sanitize and validate MRZ lines
 function sanitizeMRZLines(text) {
-  const lines = text.split('\n')
+  const lines = text.toUpperCase().split('\n')
     .map(line => line.trim())
     .filter(line => line.length > 30); // Filter out very short lines
 
-  // Clean up OCR errors: replace common confusions
-  const cleanLines = lines.map(line => {
-    // Remove all characters except alphanumerics and <
-    let cleaned = line.replace(/[^A-Z0-9<]/g, '');
-    // Fix common OCR confusions
-    cleaned = cleaned.replace(/O/g, '0'); // O -> 0
-    cleaned = cleaned.replace(/I/g, '1'); // I -> 1
-    cleaned = cleaned.replace(/S/g, '5'); // S -> 5
-    cleaned = cleaned.replace(/Z/g, '2'); // Z -> 2
-    return cleaned;
-  });
-
-  return cleanLines;
+  return lines.map(line => line.replace(/[^A-Z0-9<]/g, ''));
 }
 
 // Helper function to try parsing MRZ with error handling
@@ -985,7 +973,7 @@ function parseMRZText(mrzText) {
     const td3Lines = lines.filter(line => line.length === 44);
     if (td3Lines.length >= 2) {
       const mrzString = td3Lines.slice(0, 2).join('\n');
-      const parsed = mrz.parse(mrzString);
+      const parsed = mrz.parse(mrzString, { autocorrect: true });
       console.log('Passport MRZ parsed:', { format: parsed.format, valid: parsed.valid });
       return parsed;
     }
@@ -994,7 +982,7 @@ function parseMRZText(mrzText) {
     const sortedLines = lines.sort((a, b) => b.length - a.length);
     if (sortedLines.length >= 2) {
       const mrzString = sortedLines.slice(0, 2).join('\n');
-      const parsed = mrz.parse(mrzString);
+      const parsed = mrz.parse(mrzString, { autocorrect: true });
       console.log('Passport MRZ parsed:', { format: parsed.format, valid: parsed.valid });
       return parsed;
     }
@@ -1446,20 +1434,16 @@ app.post('/api/trips/:tripId/manifest/pdf', authenticateToken, async (req, res) 
       ORDER BY name_ar ASC
     `, [tripId]);
 
-    const PdfPrinter = require('pdfmake');
-    const vfsFonts = require('pdfmake/build/vfs_fonts.js');
-
-    // Use built-in fonts (will work for English, Arabic may not render perfectly)
-    const fonts = {
+    const pdfMake = require('pdfmake');
+    const pdfMakeDirectory = path.dirname(require.resolve('pdfmake/package.json'));
+    pdfMake.setFonts({
       Roboto: {
-        normal: 'Buffer',
-        bold: 'Buffer',
-        italics: 'Buffer',
-        bolditalics: 'Buffer'
+        normal: path.join(pdfMakeDirectory, 'fonts', 'Roboto', 'Roboto-Regular.ttf'),
+        bold: path.join(pdfMakeDirectory, 'fonts', 'Roboto', 'Roboto-Medium.ttf'),
+        italics: path.join(pdfMakeDirectory, 'fonts', 'Roboto', 'Roboto-Italic.ttf'),
+        bolditalics: path.join(pdfMakeDirectory, 'fonts', 'Roboto', 'Roboto-MediumItalic.ttf')
       }
-    };
-
-    const printer = new PdfPrinter(fonts);
+    });
     const docDefinition = {
       content: [
         {
@@ -1536,18 +1520,11 @@ app.post('/api/trips/:tripId/manifest/pdf', authenticateToken, async (req, res) 
       }
     };
 
-    const pdfDoc = printer.createPdfKitDocument(docDefinition);
-    const chunks = [];
-
-    pdfDoc.on('data', chunk => chunks.push(chunk));
-    pdfDoc.on('end', () => {
-      const pdfBuffer = Buffer.concat(chunks);
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=manifest_${trip.name.replace(/\s+/g, '_')}.pdf`);
-      res.send(pdfBuffer);
-    });
-
-    pdfDoc.end();
+    const pdfBuffer = await pdfMake.createPdf(docDefinition).getBuffer();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="manifest_${tripId}.pdf"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    res.send(pdfBuffer);
   } catch (err) {
     console.error('PDF generation error:', err);
     res.status(500).json({ error: 'Failed to generate PDF' });

@@ -494,3 +494,56 @@ body {
     margin: var(--spacing-md);
   }
 }
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 12mm;
+  }
+
+  body.print-manifest {
+    background: #fff;
+    color: #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body.print-manifest #root {
+    display: block;
+    min-height: 0;
+  }
+
+  body.print-manifest #root aside,
+  body.print-manifest .manifest-actions,
+  body.print-manifest .manifest-toolbar button {
+    display: none !important;
+  }
+
+  body.print-manifest #root main {
+    width: 100%;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  body.print-manifest .manifest-card,
+  body.print-manifest .manifest-card .table-container {
+    overflow: visible !important;
+    box-shadow: none !important;
+  }
+
+  body.print-manifest .manifest-card table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  body.print-manifest .manifest-card th,
+  body.print-manifest .manifest-card td {
+    border: 1px solid #888;
+    color: #000;
+  }
+
+  body.print-manifest .manifest-card tr {
+    break-inside: avoid;
+  }
+}

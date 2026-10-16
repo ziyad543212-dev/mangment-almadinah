@@ -50,9 +50,19 @@ function TripDetails() {
     setSavingPilgrim(true);
 
     try {
+      const tripId = Number(id);
       await api.post('/api/pilgrims', {
-        trip_id: parseInt(id!),
-        ...pilgrimFormData,
+        trip_id: tripId,
+        name_ar: pilgrimFormData.name_ar.trim() || null,
+        name_en: pilgrimFormData.name_en.trim() || null,
+        nationality: pilgrimFormData.nationality.trim(),
+        passport_number: pilgrimFormData.passport_number.trim(),
+        passport_expiry_date: pilgrimFormData.passport_expiry_date || null,
+        date_of_birth: pilgrimFormData.date_of_birth || null,
+        gender: pilgrimFormData.gender || null,
+        visa_number: pilgrimFormData.visa_number.trim() || null,
+        visa_document_path: pilgrimFormData.visa_document_path || null,
+        notes: pilgrimFormData.notes.trim() || null,
       });
       alert('تمت إضافة المعتمر بنجاح');
       setShowPilgrimModal(false);

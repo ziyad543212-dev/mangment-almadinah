@@ -26,6 +26,11 @@ function PassengerManifest() {
   const [generatingPdf, setGeneratingPdf] = useState(false);
 
   useEffect(() => {
+    document.body.classList.add('print-manifest');
+    return () => document.body.classList.remove('print-manifest');
+  }, []);
+
+  useEffect(() => {
     if (tripId) {
       fetchManifest();
     }
@@ -87,6 +92,7 @@ function PassengerManifest() {
           alignItems: 'center',
           justifyContent: 'space-between',
         }}
+        className="manifest-toolbar"
       >
         <div>
           <button
@@ -103,26 +109,32 @@ function PassengerManifest() {
             تاريخ الرحلة: {trip && new Date(trip.trip_date).toLocaleDateString('ar-SA')}
           </p>
         </div>
-        <button
-          onClick={handleExportPdf}
-          className="btn btn-primary"
-          disabled={generatingPdf}
-        >
-          {generatingPdf ? (
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span className="spinner" style={{ width: '16px', height: '16px' }}></span>
-              جاري التصدير...
-            </span>
-          ) : (
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span>📄</span>
-              <span>طباعة كشف الركاب</span>
-            </span>
-          )}
-        </button>
+        <div className="manifest-actions">
+          <button onClick={() => window.print()} className="btn btn-primary">
+            <span>🖨️</span>
+            <span>طباعة كشف الركاب</span>
+          </button>
+          <button
+            onClick={handleExportPdf}
+            className="btn btn-secondary"
+            disabled={generatingPdf}
+          >
+            {generatingPdf ? (
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span className="spinner" style={{ width: '16px', height: '16px' }}></span>
+                جاري التصدير...
+              </span>
+            ) : (
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span>📄</span>
+                <span>تنزيل PDF</span>
+              </span>
+            )}
+          </button>
+        </div>
       </div>
 
-      <div className="card" style={{ padding: 0 }}>
+      <div className="card manifest-card" style={{ padding: 0 }}>
         <div className="table-container">
           <table className="table">
             <thead>
