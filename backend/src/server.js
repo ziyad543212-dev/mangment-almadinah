@@ -19,6 +19,7 @@ const HOST = '0.0.0.0';
 const DATA_DIR = db.dataDir;
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const OCR_CACHE_DIR = path.join(DATA_DIR, 'tesseract-cache');
+let hasLegacyFullName = false;
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 fs.mkdirSync(OCR_CACHE_DIR, { recursive: true });
 const allowedOrigins = new Set([
@@ -624,21 +625,81 @@ app.get('/api/pilgrims/:id', authenticateToken, async (req, res) => {
 // Create pilgrim
 app.post('/api/pilgrims', authenticateToken, async (req, res) => {
   try {
-    const { trip_id, name_ar, name_en, nationality, passport_number, passport_expiry_date, date_of_birth, gender, visa_number, visa_document_path, notes } = req.body;
+    const {
+      trip_id,
+      name_ar,
+      name_en,
+      nationality,
+      passport_number,
+      passport_expiry_date,
+      date_of_birth,
+      gender,
+      visa_number,
+      visa_document_path,
+      notes
+    } = req.body;
+    const tripId = Number(trip_id);
+    const normalizeText = (value) => {
+      if (typeof value !== 'string') return null;
+      const normalized = value.trim();
+      return normalized || null;
+    };
+    const normalizedNameAr = normalizeText(name_ar);
+    const normalizedNameEn = normalizeText(name_en);
+    const normalizedNationality = normalizeText(nationality);
+    const normalizedPassportNumber = normalizeText(passport_number);
 
-    if (!trip_id || !nationality || !passport_number) {
+    if (!Number.isSafeInteger(tripId) || tripId <= 0 ||
+        !normalizedNationality || !normalizedPassportNumber) {
       return res.status(400).json({ error: 'الرحلة والجنسية ورقم جواز السفر مطلوبة' });
     }
 
+    const insertColumns = [
+      'trip_id',
+      ...(hasLegacyFullName ? ['full_name'] : []),
+      'name_ar',
+      'name_en',
+      'nationality',
+      'passport_number',
+      'passport_expiry_date',
+      'date_of_birth',
+      'gender',
+      'visa_number',
+      'visa_document_path',
+      'notes'
+    ];
+    const values = [
+      tripId,
+      ...(hasLegacyFullName
+        ? [[normalizedNameAr, normalizedNameEn].filter(Boolean).join(' ') || normalizedPassportNumber]
+        : []),
+      normalizedNameAr,
+      normalizedNameEn,
+      normalizedNationality,
+      normalizedPassportNumber,
+      normalizeText(passport_expiry_date),
+      normalizeText(date_of_birth),
+      normalizeText(gender),
+      normalizeText(visa_number),
+      normalizeText(visa_document_path),
+      normalizeText(notes)
+    ];
+    const placeholders = insertColumns.map(() => '?').join(', ');
     const result = await queryRun(
-      'INSERT INTO pilgrims (trip_id, name_ar, name_en, nationality, passport_number, passport_expiry_date, date_of_birth, gender, visa_number, visa_document_path, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [trip_id, name_ar || null, name_en || null, nationality, passport_number, passport_expiry_date || null, date_of_birth || null, gender || null, visa_number || null, visa_document_path || null, notes || null]
+      `INSERT INTO pilgrims (${insertColumns.join(', ')}) ` +
+        `SELECT ${placeholders} WHERE EXISTS (SELECT 1 FROM trips WHERE id = ?)`,
+      [...values, tripId]
     );
 
+    if (result.changes === 0) {
+      return res.status(400).json({ error: 'الرحلة المحددة غير موجودة' });
+    }
+
     res.status(201).json({ message: 'تمت إضافة السجل بنجاح', id: result.lastID });
-  } catch (err) {
-    console.error('Create pilgrim error:', err);
-    if (err.message && err.message.includes('unique')) {
+  } catch (error) {
+    console.error('Pilgrim creation error:', error);
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+        /unique constraint failed/i.test(error.message || '')) {
       return res.status(400).json({ error: 'رقم جواز السفر موجود بالفعل' });
     }
     res.status(500).json({ error: 'خطأ في الخادم' });
@@ -1591,7 +1652,11 @@ app.get('/api/reports/trips', authenticateToken, async (req, res) => {
 });
 
 db.ready
-  .then(() => {
+  .then(async () => {
+    const columns = await query('PRAGMA table_info(pilgrims)');
+    hasLegacyFullName = columns.some((column) => column.name === 'full_name');
+    console.log('Pilgrim schema compatibility cached:', { hasLegacyFullName });
+
     app.listen(PORT, HOST, () => {
       console.log(`Server running on http://${HOST}:${PORT}`);
     });
