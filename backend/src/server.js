@@ -9,16 +9,14 @@ const tripRoutes = require('./routes/trips');
 const pilgrimRoutes = require('./routes/pilgrims');
 const paymentRoutes = require('./routes/payments');
 const reportRoutes = require('./routes/reports');
+const ocrRoutes = require('./routes/ocr');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const HOST = '0.0.0.0';
-const DATA_DIR = db.dataDir || process.cwd();
 const uploadDir = path.join(process.env.UPLOAD_DIR || __dirname, 'uploads');
-const OCR_CACHE_DIR = path.join(DATA_DIR, 'tesseract-cache');
 
 fs.mkdirSync(uploadDir, { recursive: true });
-fs.mkdirSync(OCR_CACHE_DIR, { recursive: true });
 
 const allowedOrigins = new Set([
   'http://localhost:5173',
@@ -56,6 +54,7 @@ app.use('/api/trips', tripRoutes);
 app.use('/api', pilgrimRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api', reportRoutes);
+app.use('/api', ocrRoutes);
 
 db.ready
   .then(() => {
