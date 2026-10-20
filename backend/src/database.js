@@ -1,11 +1,10 @@
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 
-// الاتصال بـ Neon باستخدام متغير البيئة DATABASE_URL
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
-    rejectUnauthorized: false // مطلوبة للاتصال السحابي الآمن مع Neon
+    rejectUnauthorized: false
   }
 });
 
@@ -16,7 +15,6 @@ const ready = new Promise((resolve, reject) => {
   rejectReady = reject;
 });
 
-// تشغيل تهيئة قاعدة البيانات عند بدء الاتصال
 initializeDatabase()
   .then(() => {
     resolveReady();
@@ -28,54 +26,71 @@ initializeDatabase()
   });
 
 pool.ready = ready;
+pool.dataDir = process.cwd();
 
-// دالة لتنفيذ الاستعلامات (الإدخال، التحديث، الحذف)
 async function run(sql, params = []) {
-  // تحويل علامات الاستفهام (?) في SQLite إلى رموز بارامترات PostgreSQL ($1, $2, ...)
   let paramIndex = 0;
   const convertedSql = sql.replace(/\?/g, () => `$${++paramIndex}`);
-  
-  const client = await pool.connect();
-  try {
-    const result = await client.query(convertedSql, params);
-    return result;
-  } finally {
-    client.release();
-  }
+  const result = await pool.query(convertedSql, params);
+  return {
+    lastID: result.rows[0]?.id,
+    changes: result.rowCount
+  };
 }
 
-// دالة لجلب صف واحد
 async function get(sql, params = []) {
   let paramIndex = 0;
   const convertedSql = sql.replace(/\?/g, () => `$${++paramIndex}`);
-  
-  const client = await pool.connect();
-  try {
-    const result = await client.query(convertedSql, params);
-    return result.rows[0];
-  } finally {
-    client.release();
-  }
+  const result = await pool.query(convertedSql, params);
+  return result.rows[0];
 }
 
-// دالة لجلب كل الصفوف
 async function all(sql, params = []) {
   let paramIndex = 0;
   const convertedSql = sql.replace(/\?/g, () => `$${++paramIndex}`);
-  
-  const client = await pool.connect();
-  try {
-    const result = await client.query(convertedSql, params);
-    return result.rows;
-  } finally {
-    client.release();
+  const result = await pool.query(convertedSql, params);
+  return result.rows;
+}
+
+// دمج التوافقية مع الكولباك ليعمل server.js دون تعديل
+function dbAll(sql, params, callback) {
+  if (typeof params === 'function') {
+    callback = params;
+    params = [];
   }
+  all(sql, params)
+    .then(rows => callback(null, rows))
+    .catch(err => callback(err));
+}
+
+function dbGet(sql, params, callback) {
+  if (typeof params === 'function') {
+    callback = params;
+    params = [];
+  }
+  get(sql, params)
+    .then(row => callback(null, row))
+    .catch(err => callback(err));
+}
+
+function dbRun(sql, params, callback) {
+  if (typeof params === 'function') {
+    callback = params;
+    params = [];
+  }
+  run(sql, params)
+    .then(res => {
+      const context = { lastID: res.lastID, changes: res.changes };
+      if (callback) callback.call(context, null);
+    })
+    .catch(err => {
+      if (callback) callback(err);
+    });
 }
 
 async function initializeDatabase() {
   try {
-    // 1. جدول المستخدمين
-    await run(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
         username VARCHAR(255) UNIQUE NOT NULL,
@@ -86,8 +101,7 @@ async function initializeDatabase() {
       )
     `);
 
-    // 2. جدول الرحلات
-    await run(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS trips (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
@@ -99,8 +113,7 @@ async function initializeDatabase() {
       )
     `);
 
-    // 3. جدول المعتمرين
-    await run(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS pilgrims (
         id SERIAL PRIMARY KEY,
         trip_id INTEGER NOT NULL,
@@ -120,13 +133,12 @@ async function initializeDatabase() {
       )
     `);
 
-    // 4. جدول المدفوعات
-    await run(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS payments (
         id SERIAL PRIMARY KEY,
         pilgrim_id INTEGER NOT NULL,
         amount_usd REAL NOT NULL,
-        payment_method TEXT NOT NULL CHECK(payment_method IN ('نقدًا', 'شام كاش')),
+        payment_method TEXT NOT NULL,
         payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         transaction_reference TEXT,
         notes TEXT,
@@ -135,8 +147,7 @@ async function initializeDatabase() {
       )
     `);
 
-    // 5. جدول تفاصيل الفئات النقدية
-    await run(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS cash_payment_denominations (
         id SERIAL PRIMARY KEY,
         payment_id INTEGER NOT NULL,
@@ -148,23 +159,6 @@ async function initializeDatabase() {
       )
     `);
 
-    // إنشاء الفهارس (Indexes) لتسريع البحث
-    const indexes = [
-      'CREATE INDEX IF NOT EXISTS idx_passport_number ON pilgrims(passport_number)',
-      'CREATE INDEX IF NOT EXISTS idx_visa_number ON pilgrims(visa_number)',
-      'CREATE INDEX IF NOT EXISTS idx_nationality ON pilgrims(nationality)',
-      'CREATE INDEX IF NOT EXISTS idx_name_en ON pilgrims(name_en)',
-      'CREATE INDEX IF NOT EXISTS idx_name_ar ON pilgrims(name_ar)',
-      'CREATE INDEX IF NOT EXISTS idx_pilgrim_id ON payments(pilgrim_id)',
-      'CREATE INDEX IF NOT EXISTS idx_trip_id ON pilgrims(trip_id)',
-      'CREATE INDEX IF NOT EXISTS idx_trip_date ON trips(trip_date)',
-      'CREATE INDEX IF NOT EXISTS idx_payment_id ON cash_payment_denominations(payment_id)'
-    ];
-
-    for (const index of indexes) {
-      await run(index);
-    }
-
     await seedInitialAdmin();
   } catch (error) {
     console.error('Database initialization failed:', error);
@@ -173,21 +167,16 @@ async function initializeDatabase() {
 }
 
 async function seedInitialAdmin() {
-  const userCount = await get('SELECT COUNT(*) AS count FROM users');
-  // PostgreSQL يرجع الـ count كـ string أو number، نحوله لرقم للتاكد
-  if (parseInt(userCount.count) > 0) return;
+  const res = await pool.query('SELECT COUNT(*) AS count FROM users');
+  if (parseInt(res.rows[0].count) > 0) return;
 
   const username = process.env.INITIAL_ADMIN_USERNAME?.trim() || 'admin';
   const password = process.env.INITIAL_ADMIN_PASSWORD;
 
   if (!password) {
     if (process.env.NODE_ENV === 'production') {
-      throw new Error(
-        'INITIAL_ADMIN_PASSWORD must be configured before starting with an empty production database'
-      );
+      throw new Error('INITIAL_ADMIN_PASSWORD must be configured before starting with an empty production database');
     }
-
-    console.warn('No users exist. Set INITIAL_ADMIN_USERNAME and INITIAL_ADMIN_PASSWORD to seed an admin.');
     return;
   }
 
@@ -195,17 +184,19 @@ async function seedInitialAdmin() {
     throw new Error('INITIAL_ADMIN_PASSWORD must be at least 12 characters long');
   }
 
-  await run(
-    'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-    [username, bcrypt.hashSync(password, 10), 'admin']
+  const passwordHash = bcrypt.hashSync(password, 10);
+  await pool.query(
+    'INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3)',
+    [username, passwordHash, 'admin']
   );
   console.log(`Initial admin user "${username}" created.`);
 }
 
 module.exports = {
   query: (sql, params) => pool.query(sql, params),
-  run,
-  get,
-  all,
-  ready: pool.ready
+  run: dbRun,
+  get: dbGet,
+  all: dbAll,
+  ready,
+  dataDir: process.cwd()
 };
