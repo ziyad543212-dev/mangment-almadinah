@@ -30,7 +30,9 @@ const allowedOrigins = new Set([
     .map((origin) => origin.trim())
     .filter(Boolean)
 ]);
-
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
 app.use(cors({
   origin(origin, callback) {
     let isVercelOrigin = false;
