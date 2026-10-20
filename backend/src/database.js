@@ -52,7 +52,7 @@ async function all(sql, params = []) {
   return result.rows;
 }
 
-// دمج التوافقية مع الكولباك ليعمل server.js دون تعديل
+// التوافقية مع الكولباك ليعمل السيرفر بسلاسة
 function dbAll(sql, params, callback) {
   if (typeof params === 'function') {
     callback = params;
@@ -90,6 +90,7 @@ function dbRun(sql, params, callback) {
 
 async function initializeDatabase() {
   try {
+    // 1. جدول المستخدمين
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -101,6 +102,7 @@ async function initializeDatabase() {
       )
     `);
 
+    // 2. جدول الرحلات
     await pool.query(`
       CREATE TABLE IF NOT EXISTS trips (
         id SERIAL PRIMARY KEY,
@@ -113,12 +115,17 @@ async function initializeDatabase() {
       )
     `);
 
+    // 3. جدول المعتمرين (مع الحقول المفصلة للأسماء بالعربي والانجليزي)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS pilgrims (
         id SERIAL PRIMARY KEY,
         trip_id INTEGER NOT NULL,
-        name_ar TEXT,
-        name_en TEXT,
+        first_name_ar TEXT,
+        father_name_ar TEXT,
+        last_name_ar TEXT,
+        first_name_en TEXT,
+        father_name_en TEXT,
+        last_name_en TEXT,
         nationality TEXT NOT NULL,
         passport_number TEXT UNIQUE NOT NULL,
         passport_expiry_date DATE,
@@ -133,6 +140,7 @@ async function initializeDatabase() {
       )
     `);
 
+    // 4. جدول المدفوعات
     await pool.query(`
       CREATE TABLE IF NOT EXISTS payments (
         id SERIAL PRIMARY KEY,
@@ -147,6 +155,7 @@ async function initializeDatabase() {
       )
     `);
 
+    // 5. جدول الفئات النقدية
     await pool.query(`
       CREATE TABLE IF NOT EXISTS cash_payment_denominations (
         id SERIAL PRIMARY KEY,
@@ -158,6 +167,18 @@ async function initializeDatabase() {
         FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE CASCADE
       )
     `);
+
+    // إنشاء الفهارس لتسريع البحث
+    const indexes = [
+      'CREATE INDEX IF NOT EXISTS idx_passport_number ON pilgrims(passport_number)',
+      'CREATE INDEX IF NOT EXISTS idx_visa_number ON pilgrims(visa_number)',
+      'CREATE INDEX IF NOT EXISTS idx_nationality ON pilgrims(nationality)',
+      'CREATE INDEX IF NOT EXISTS idx_trip_id ON pilgrims(trip_id)'
+    ];
+
+    for (const index of indexes) {
+      await pool.query(index);
+    }
 
     await seedInitialAdmin();
   } catch (error) {
