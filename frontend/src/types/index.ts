@@ -22,6 +22,12 @@ export interface Trip {
 export interface Pilgrim {
   id: number;
   trip_id: number;
+  first_name_ar?: string;
+  father_name_ar?: string;
+  last_name_ar?: string;
+  first_name_en?: string;
+  father_name_en?: string;
+  last_name_en?: string;
   name_ar?: string;
   name_en?: string;
   full_name?: string;

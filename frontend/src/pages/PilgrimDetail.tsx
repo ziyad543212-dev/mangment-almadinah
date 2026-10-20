@@ -186,6 +186,7 @@ function PilgrimDetail() {
           <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1a1a2e', marginBottom: '0.5rem' }}>
             {fullNameAr}
           </h1>
+          <p style={{ color: '#666', margin: '0 0 0.5rem' }}>{fullNameEn}</p>
           <p style={{ color: '#666', margin: 0 }}>{pilgrim.nationality}</p>
         </div>
         <div>
