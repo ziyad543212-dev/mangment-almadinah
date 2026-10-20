@@ -202,7 +202,7 @@ async function seedInitialAdmin() {
   console.log(`Initial admin user "${username}" created.`);
 }
 
-module.exports {
+module.exports = {
   query: (sql, params) => pool.query(sql, params),
   run,
   get,
