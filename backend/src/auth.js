@@ -84,8 +84,8 @@ function authenticateToken(req, res, next) {
       next();
     });
   } catch (error) {
-    console.error('Authentication error:', error);
-    return res.status(500).json({ error: 'خطأ في الخادم' });
+    console.error('CRITICAL LOGIN ERROR:', error);
+    res.status(500).json({ error: 'خطأ في الخادم: ' + error.message });
   }
 }
 

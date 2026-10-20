@@ -1,15 +1,13 @@
-const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
-const fs = require('fs');
-const path = require('path');
 
-const configuredDataDir = process.env.DATA_DIR?.trim();
-const dataDir = configuredDataDir && configuredDataDir !== '.'
-  ? path.resolve(configuredDataDir)
-  : path.resolve(__dirname, '..');
-const dbPath = path.join(dataDir, 'database.sqlite');
-
-fs.mkdirSync(dataDir, { recursive: true });
+// الاتصال بـ Neon باستخدام متغير البيئة DATABASE_URL
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false // مطلوبة للاتصال السحابي الآمن مع Neon
+  }
+});
 
 let resolveReady;
 let rejectReady;
@@ -18,80 +16,93 @@ const ready = new Promise((resolve, reject) => {
   rejectReady = reject;
 });
 
-const db = new sqlite3.Database(dbPath, (error) => {
-  if (error) {
+// تشغيل تهيئة قاعدة البيانات عند بدء الاتصال
+initializeDatabase()
+  .then(() => {
+    resolveReady();
+    console.log('Database connected and initialized successfully on Neon.');
+  })
+  .catch((error) => {
     rejectReady(error);
-    return;
+    console.error('Database initialization failed:', error);
+  });
+
+pool.ready = ready;
+
+// دالة لتنفيذ الاستعلامات (الإدخال، التحديث، الحذف)
+async function run(sql, params = []) {
+  // تحويل علامات الاستفهام (?) في SQLite إلى رموز بارامترات PostgreSQL ($1, $2, ...)
+  let paramIndex = 0;
+  const convertedSql = sql.replace(/\?/g, () => `$${++paramIndex}`);
+  
+  const client = await pool.connect();
+  try {
+    const result = await client.query(convertedSql, params);
+    return result;
+  } finally {
+    client.release();
   }
-
-  initializeDatabase().then(resolveReady, rejectReady);
-});
-db.ready = ready;
-db.dataDir = dataDir;
-
-function run(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function (error) {
-      if (error) reject(error);
-      else resolve(this);
-    });
-  });
 }
 
-function get(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (error, row) => {
-      if (error) reject(error);
-      else resolve(row);
-    });
-  });
+// دالة لجلب صف واحد
+async function get(sql, params = []) {
+  let paramIndex = 0;
+  const convertedSql = sql.replace(/\?/g, () => `$${++paramIndex}`);
+  
+  const client = await pool.connect();
+  try {
+    const result = await client.query(convertedSql, params);
+    return result.rows[0];
+  } finally {
+    client.release();
+  }
 }
 
-function all(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (error, rows) => {
-      if (error) reject(error);
-      else resolve(rows);
-    });
-  });
-}
-
-async function ensureColumn(table, column, definition) {
-  const columns = await all(`PRAGMA table_info(${table})`);
-  if (!columns.some((item) => item.name === column)) {
-    await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+// دالة لجلب كل الصفوف
+async function all(sql, params = []) {
+  let paramIndex = 0;
+  const convertedSql = sql.replace(/\?/g, () => `$${++paramIndex}`);
+  
+  const client = await pool.connect();
+  try {
+    const result = await client.query(convertedSql, params);
+    return result.rows;
+  } finally {
+    client.release();
   }
 }
 
 async function initializeDatabase() {
   try {
+    // 1. جدول المستخدمين
     await run(`
       CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        role TEXT DEFAULT 'admin',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        role VARCHAR(50) DEFAULT 'admin',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    await ensureColumn('users', 'role', "TEXT DEFAULT 'admin'");
 
+    // 2. جدول الرحلات
     await run(`
       CREATE TABLE IF NOT EXISTS trips (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
         trip_date DATE NOT NULL,
         trip_cost_usd REAL DEFAULT 0,
         notes TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
+    // 3. جدول المعتمرين
     await run(`
       CREATE TABLE IF NOT EXISTS pilgrims (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         trip_id INTEGER NOT NULL,
         name_ar TEXT,
         name_en TEXT,
@@ -103,44 +114,41 @@ async function initializeDatabase() {
         visa_number TEXT,
         visa_document_path TEXT,
         notes TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
       )
     `);
-    await ensureColumn('pilgrims', 'name_ar', 'TEXT');
-    await ensureColumn('pilgrims', 'name_en', 'TEXT');
-    await ensureColumn('pilgrims', 'passport_expiry_date', 'DATE');
-    await ensureColumn('pilgrims', 'date_of_birth', 'DATE');
-    await ensureColumn('pilgrims', 'gender', 'TEXT');
-    await ensureColumn('pilgrims', 'visa_document_path', 'TEXT');
 
+    // 4. جدول المدفوعات
     await run(`
       CREATE TABLE IF NOT EXISTS payments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         pilgrim_id INTEGER NOT NULL,
         amount_usd REAL NOT NULL,
         payment_method TEXT NOT NULL CHECK(payment_method IN ('نقدًا', 'شام كاش')),
-        payment_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         transaction_reference TEXT,
         notes TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (pilgrim_id) REFERENCES pilgrims(id) ON DELETE CASCADE
       )
     `);
 
+    // 5. جدول تفاصيل الفئات النقدية
     await run(`
       CREATE TABLE IF NOT EXISTS cash_payment_denominations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         payment_id INTEGER NOT NULL,
         denomination INTEGER NOT NULL,
         quantity INTEGER NOT NULL,
         subtotal REAL NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE CASCADE
       )
     `);
 
+    // إنشاء الفهارس (Indexes) لتسريع البحث
     const indexes = [
       'CREATE INDEX IF NOT EXISTS idx_passport_number ON pilgrims(passport_number)',
       'CREATE INDEX IF NOT EXISTS idx_visa_number ON pilgrims(visa_number)',
@@ -158,7 +166,6 @@ async function initializeDatabase() {
     }
 
     await seedInitialAdmin();
-    console.log(`Database initialized at ${dbPath}`);
   } catch (error) {
     console.error('Database initialization failed:', error);
     throw error;
@@ -167,7 +174,8 @@ async function initializeDatabase() {
 
 async function seedInitialAdmin() {
   const userCount = await get('SELECT COUNT(*) AS count FROM users');
-  if (userCount.count > 0) return;
+  // PostgreSQL يرجع الـ count كـ string أو number، نحوله لرقم للتاكد
+  if (parseInt(userCount.count) > 0) return;
 
   const username = process.env.INITIAL_ADMIN_USERNAME?.trim() || 'admin';
   const password = process.env.INITIAL_ADMIN_PASSWORD;
@@ -194,4 +202,10 @@ async function seedInitialAdmin() {
   console.log(`Initial admin user "${username}" created.`);
 }
 
-module.exports = db;
+module.exports {
+  query: (sql, params) => pool.query(sql, params),
+  run,
+  get,
+  all,
+  ready: pool.ready
+};
