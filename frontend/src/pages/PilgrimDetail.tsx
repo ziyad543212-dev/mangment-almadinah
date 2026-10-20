@@ -39,6 +39,20 @@ function PilgrimDetail() {
     }
   };
 
+  const handleDeletePilgrim = async () => {
+    if (!confirm('هل أنت متأكد من حذف هذا المعتمر نهائياً؟')) {
+      return;
+    }
+
+    try {
+      await api.delete(`/api/pilgrims/${id}`);
+      alert('تم حذف المعتمر بنجاح');
+      navigate(`/trips/${pilgrim?.trip_id}`);
+    } catch (error: any) {
+      alert(error.response?.data?.error || 'حدث خطأ أثناء الحذف');
+    }
+  };
+
   const addCashDenomination = () => {
     setPaymentData({
       ...paymentData,
@@ -148,6 +162,9 @@ function PilgrimDetail() {
     );
   }
 
+  const fullNameAr = [pilgrim.first_name_ar, pilgrim.father_name_ar, pilgrim.last_name_ar].filter(Boolean).join(' ') || 'غير متوفر';
+  const fullNameEn = [pilgrim.first_name_en, pilgrim.father_name_en, pilgrim.last_name_en].filter(Boolean).join(' ') || 'غير متوفر';
+
   return (
     <div>
       <div
@@ -167,9 +184,17 @@ function PilgrimDetail() {
             ← العودة للرحلة
           </button>
           <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1a1a2e', marginBottom: '0.5rem' }}>
-            {pilgrim.full_name}
+            {fullNameAr}
           </h1>
           <p style={{ color: '#666', margin: 0 }}>{pilgrim.nationality}</p>
+        </div>
+        <div>
+          <button
+            onClick={handleDeletePilgrim}
+            className="btn btn-danger"
+          >
+            🗑️ حذف المعتمر
+          </button>
         </div>
       </div>
 
@@ -184,8 +209,16 @@ function PilgrimDetail() {
           }}
         >
           <div>
-            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>الاسم الكامل</p>
-            <p style={{ fontSize: '1.125rem', fontWeight: '600' }}>{pilgrim.full_name}</p>
+            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>الاسم بالعربية (الاسم الأول / الأب / النسبة)</p>
+            <p style={{ fontSize: '1.125rem', fontWeight: '600' }}>
+              {pilgrim.first_name_ar || '-'} / {pilgrim.father_name_ar || '-'} / {pilgrim.last_name_ar || '-'}
+            </p>
+          </div>
+          <div>
+            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>الاسم بالإنجليزية (First / Father / Last)</p>
+            <p style={{ fontSize: '1.125rem', fontWeight: '600' }}>
+              {pilgrim.first_name_en || '-'} / {pilgrim.father_name_en || '-'} / {pilgrim.last_name_en || '-'}
+            </p>
           </div>
           <div>
             <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>الجنسية</p>
@@ -267,7 +300,7 @@ function PilgrimDetail() {
                         <div style={{ fontSize: '0.875rem' }}>
                           {payment.cash_denominations.map((denom, idx) => (
                             <div key={idx}>
-                              ${denom.denomination} × {denom.quantity} = ${denom.subtotal.toFixed(2)}
+                              ${denom.denomination} × {denom.quantity} =${denom.subtotal.toFixed(2)}
                             </div>
                           ))}
                         </div>
