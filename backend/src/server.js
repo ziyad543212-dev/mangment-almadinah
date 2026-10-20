@@ -30,7 +30,7 @@ const allowedOrigins = new Set([
     .map((origin) => origin.trim())
     .filter(Boolean)
 ]);
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server is running on port ${PORT}`);
 });
 app.use(cors({
