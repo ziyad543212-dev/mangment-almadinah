@@ -28,9 +28,6 @@ export interface Pilgrim {
   first_name_en?: string;
   father_name_en?: string;
   last_name_en?: string;
-  name_ar?: string;
-  name_en?: string;
-  full_name?: string;
   nationality: string;
   passport_number: string;
   passport_expiry_date?: string;
@@ -66,9 +63,12 @@ export interface Payment {
   notes: string | null;
   created_at: string;
   cash_denominations?: CashDenomination[];
-  name_ar?: string;
-  name_en?: string;
-  full_name?: string;
+  first_name_ar?: string;
+  father_name_ar?: string;
+  last_name_ar?: string;
+  first_name_en?: string;
+  father_name_en?: string;
+  last_name_en?: string;
   nationality?: string;
   trip_name?: string;
 }

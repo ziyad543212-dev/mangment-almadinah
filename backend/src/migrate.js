@@ -108,10 +108,19 @@ function performMigration() {
                     `CREATE TABLE pilgrims_new (
                       id INTEGER PRIMARY KEY AUTOINCREMENT,
                       trip_id INTEGER NOT NULL,
-                      full_name TEXT NOT NULL,
+                      first_name_ar TEXT,
+                      father_name_ar TEXT,
+                      last_name_ar TEXT,
+                      first_name_en TEXT,
+                      father_name_en TEXT,
+                      last_name_en TEXT,
                       nationality TEXT NOT NULL,
                       passport_number TEXT UNIQUE NOT NULL,
+                      passport_expiry_date DATE,
+                      date_of_birth DATE,
+                      gender TEXT,
                       visa_number TEXT,
+                      visa_document_path TEXT,
                       notes TEXT,
                       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -128,7 +137,7 @@ function performMigration() {
 
                       // Copy data
                       db.run(
-                        `INSERT INTO pilgrims_new (id, trip_id, full_name, nationality, passport_number, visa_number, notes, created_at, updated_at)
+                        `INSERT INTO pilgrims_new (id, trip_id, first_name_ar, nationality, passport_number, visa_number, notes, created_at, updated_at)
                          SELECT id, trip_id, full_name, nationality, passport_number, visa_number, notes, created_at, updated_at FROM pilgrims`,
                         function(err) {
                           if (err) {

@@ -42,7 +42,9 @@ function addPilgrimsToTrips() {
   const pilgrims = [
     {
       trip_id: 1,
-      full_name: 'أحمد محمد علي',
+      first_name_ar: 'أحمد',
+      father_name_ar: 'محمد',
+      last_name_ar: 'علي',
       nationality: 'السعودية',
       passport_number: 'A12345678',
       visa_number: 'V98765432',
@@ -50,7 +52,9 @@ function addPilgrimsToTrips() {
     },
     {
       trip_id: 1,
-      full_name: 'فاطمة سالم أحمد',
+      first_name_ar: 'فاطمة',
+      father_name_ar: 'سالم',
+      last_name_ar: 'أحمد',
       nationality: 'مصر',
       passport_number: 'E87654321',
       visa_number: 'V12345678',
@@ -58,7 +62,9 @@ function addPilgrimsToTrips() {
     },
     {
       trip_id: 1,
-      full_name: 'محمد عبدالله الحربي',
+      first_name_ar: 'محمد',
+      father_name_ar: 'عبدالله',
+      last_name_ar: 'الحربي',
       nationality: 'السعودية',
       passport_number: 'A55555555',
       visa_number: 'V55555555',
@@ -66,7 +72,9 @@ function addPilgrimsToTrips() {
     },
     {
       trip_id: 2,
-      full_name: 'عمر يوسف إبراهيم',
+      first_name_ar: 'عمر',
+      father_name_ar: 'يوسف',
+      last_name_ar: 'إبراهيم',
       nationality: 'الأردن',
       passport_number: 'J44444444',
       visa_number: null,
@@ -74,7 +82,9 @@ function addPilgrimsToTrips() {
     },
     {
       trip_id: 2,
-      full_name: 'خالد سعيد محمود',
+      first_name_ar: 'خالد',
+      father_name_ar: 'سعيد',
+      last_name_ar: 'محمود',
       nationality: 'الكويت',
       passport_number: 'K33333333',
       visa_number: 'V33333333',
@@ -85,8 +95,8 @@ function addPilgrimsToTrips() {
   let pilgrimCounter = 0;
   pilgrims.forEach((pilgrim, index) => {
     db.run(
-      'INSERT INTO pilgrims (trip_id, full_name, nationality, passport_number, visa_number, notes) VALUES (?, ?, ?, ?, ?, ?)',
-      [pilgrim.trip_id, pilgrim.full_name, pilgrim.nationality, pilgrim.passport_number, pilgrim.visa_number, pilgrim.notes],
+      'INSERT INTO pilgrims (trip_id, first_name_ar, father_name_ar, last_name_ar, nationality, passport_number, visa_number, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [pilgrim.trip_id, pilgrim.first_name_ar, pilgrim.father_name_ar, pilgrim.last_name_ar, pilgrim.nationality, pilgrim.passport_number, pilgrim.visa_number, pilgrim.notes],
       function(err) {
         if (err) {
           console.error(`Error inserting pilgrim ${index + 1}:`, err);

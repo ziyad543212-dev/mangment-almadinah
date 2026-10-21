@@ -42,15 +42,64 @@ async function initializeDatabase() {
       CREATE TABLE IF NOT EXISTS pilgrims (
         id SERIAL PRIMARY KEY,
         trip_id INTEGER NOT NULL,
-        full_name TEXT NOT NULL,
+        first_name_ar TEXT,
+        father_name_ar TEXT,
+        last_name_ar TEXT,
+        first_name_en TEXT,
+        father_name_en TEXT,
+        last_name_en TEXT,
         nationality TEXT NOT NULL,
         passport_number TEXT UNIQUE NOT NULL,
+        passport_expiry_date DATE,
+        date_of_birth DATE,
+        gender TEXT,
         visa_number TEXT,
+        visa_document_path TEXT,
         notes TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
       )
+    `);
+
+    for (const [column, type] of [
+      ['first_name_ar', 'TEXT'],
+      ['father_name_ar', 'TEXT'],
+      ['last_name_ar', 'TEXT'],
+      ['first_name_en', 'TEXT'],
+      ['father_name_en', 'TEXT'],
+      ['last_name_en', 'TEXT'],
+      ['passport_expiry_date', 'DATE'],
+      ['date_of_birth', 'DATE'],
+      ['gender', 'TEXT'],
+      ['visa_document_path', 'TEXT']
+    ]) {
+      await pool.query(`ALTER TABLE pilgrims ADD COLUMN IF NOT EXISTS ${column} ${type}`);
+    }
+
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'pilgrims'
+            AND column_name = 'full_name'
+        ) THEN
+          UPDATE pilgrims
+          SET
+            first_name_ar = COALESCE(first_name_ar, NULLIF((regexp_split_to_array(BTRIM(full_name), '\\s+'))[1], '')),
+            father_name_ar = COALESCE(father_name_ar, NULLIF((regexp_split_to_array(BTRIM(full_name), '\\s+'))[2], '')),
+            last_name_ar = COALESCE(
+              last_name_ar,
+              NULLIF(array_to_string((regexp_split_to_array(BTRIM(full_name), '\\s+'))[3:], ' '), '')
+            )
+          WHERE first_name_ar IS NULL AND full_name IS NOT NULL;
+          ALTER TABLE pilgrims ALTER COLUMN full_name DROP NOT NULL;
+        END IF;
+      END;
+      $$
     `);
 
     // Create Payments table
@@ -85,7 +134,6 @@ async function initializeDatabase() {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_passport_number ON pilgrims(passport_number)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_visa_number ON pilgrims(visa_number)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_nationality ON pilgrims(nationality)`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_full_name ON pilgrims(full_name)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_pilgrim_id ON payments(pilgrim_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_trip_id ON pilgrims(trip_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_trip_date ON trips(trip_date)`);

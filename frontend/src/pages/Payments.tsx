@@ -189,7 +189,11 @@ function Payments() {
               ) : (
                 payments.map((payment) => (
                   <tr key={payment.id}>
-                    <td style={{ fontWeight: '600' }}>{payment.name_ar || payment.name_en || (payment as any).full_name || '-'}</td>
+                    <td style={{ fontWeight: '600' }}>
+                      {[payment.first_name_ar, payment.father_name_ar, payment.last_name_ar].filter(Boolean).join(' ') ||
+                        [payment.first_name_en, payment.father_name_en, payment.last_name_en].filter(Boolean).join(' ') ||
+                        '-'}
+                    </td>
                     <td>{payment.trip_name}</td>
                     <td style={{ fontWeight: '600', color: '#28a745' }}>
                       ${payment.amount_usd.toFixed(2)}

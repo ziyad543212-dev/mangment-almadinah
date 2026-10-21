@@ -140,6 +140,46 @@ async function initializeDatabase() {
       )
     `);
 
+    for (const [column, type] of [
+      ['first_name_ar', 'TEXT'],
+      ['father_name_ar', 'TEXT'],
+      ['last_name_ar', 'TEXT'],
+      ['first_name_en', 'TEXT'],
+      ['father_name_en', 'TEXT'],
+      ['last_name_en', 'TEXT'],
+      ['passport_expiry_date', 'DATE'],
+      ['date_of_birth', 'DATE'],
+      ['gender', 'TEXT'],
+      ['visa_document_path', 'TEXT']
+    ]) {
+      await pool.query(`ALTER TABLE pilgrims ADD COLUMN IF NOT EXISTS ${column} ${type}`);
+    }
+
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'pilgrims'
+            AND column_name = 'full_name'
+        ) THEN
+          UPDATE pilgrims
+          SET
+            first_name_ar = COALESCE(first_name_ar, NULLIF((regexp_split_to_array(BTRIM(full_name), '\\s+'))[1], '')),
+            father_name_ar = COALESCE(father_name_ar, NULLIF((regexp_split_to_array(BTRIM(full_name), '\\s+'))[2], '')),
+            last_name_ar = COALESCE(
+              last_name_ar,
+              NULLIF(array_to_string((regexp_split_to_array(BTRIM(full_name), '\\s+'))[3:], ' '), '')
+            )
+          WHERE first_name_ar IS NULL AND full_name IS NOT NULL;
+          ALTER TABLE pilgrims ALTER COLUMN full_name DROP NOT NULL;
+        END IF;
+      END;
+      $$
+    `);
+
     // 4. جدول المدفوعات
     await pool.query(`
       CREATE TABLE IF NOT EXISTS payments (

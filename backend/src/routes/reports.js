@@ -80,6 +80,8 @@ router.get('/trips/:tripId/manifest', authenticateToken, async (req, res) => {
         id, 
         first_name_ar, father_name_ar, last_name_ar,
         first_name_en, father_name_en, last_name_en,
+        NULLIF(CONCAT_WS(' ', NULLIF(BTRIM(first_name_ar), ''), NULLIF(BTRIM(father_name_ar), ''), NULLIF(BTRIM(last_name_ar), '')), '') AS name_ar,
+        NULLIF(CONCAT_WS(' ', NULLIF(BTRIM(first_name_en), ''), NULLIF(BTRIM(father_name_en), ''), NULLIF(BTRIM(last_name_en), '')), '') AS name_en,
         passport_number, visa_number, nationality
       FROM pilgrims WHERE trip_id = ? ORDER BY first_name_ar ASC
     `, [tripId]);

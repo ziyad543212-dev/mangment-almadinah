@@ -1,17 +1,16 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import api from '../services/api';
-import type { Trip } from '../types';
+import type { Pilgrim, Trip } from '../types';
 
 function TripDetails() {
-  const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
-  const [trip, setTrip] = useState<Trip | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [showPilgrimModal, setShowPilgrimModal] = useState(false);
-  const [pilgrimFormData, setPilgrimFormData] = useState({
-    name_ar: '',
-    name_en: '',
+  const emptyPilgrimForm = {
+    first_name_ar: '',
+    father_name_ar: '',
+    last_name_ar: '',
+    first_name_en: '',
+    father_name_en: '',
+    last_name_en: '',
     nationality: '',
     passport_number: '',
     passport_expiry_date: '',
@@ -20,7 +19,14 @@ function TripDetails() {
     visa_number: '',
     visa_document_path: '',
     notes: '',
-  });
+  };
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [trip, setTrip] = useState<Trip | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [showPilgrimModal, setShowPilgrimModal] = useState(false);
+  const [pilgrimFormData, setPilgrimFormData] = useState(emptyPilgrimForm);
+  const [editingPilgrim, setEditingPilgrim] = useState<Pilgrim | null>(null);
   const [scanningPassport, setScanningPassport] = useState(false);
   const [uploadingVisa, setUploadingVisa] = useState(false);
   const [uploadedVisaFile, setUploadedVisaFile] = useState<File | null>(null);
@@ -51,10 +57,14 @@ function TripDetails() {
 
     try {
       const tripId = Number(id);
-      await api.post('/api/pilgrims', {
+      const pilgrimData = {
         trip_id: tripId,
-        name_ar: pilgrimFormData.name_ar.trim() || null,
-        name_en: pilgrimFormData.name_en.trim() || null,
+        first_name_ar: pilgrimFormData.first_name_ar.trim() || null,
+        father_name_ar: pilgrimFormData.father_name_ar.trim() || null,
+        last_name_ar: pilgrimFormData.last_name_ar.trim() || null,
+        first_name_en: pilgrimFormData.first_name_en.trim() || null,
+        father_name_en: pilgrimFormData.father_name_en.trim() || null,
+        last_name_en: pilgrimFormData.last_name_en.trim() || null,
         nationality: pilgrimFormData.nationality.trim(),
         passport_number: pilgrimFormData.passport_number.trim(),
         passport_expiry_date: pilgrimFormData.passport_expiry_date || null,
@@ -63,27 +73,66 @@ function TripDetails() {
         visa_number: pilgrimFormData.visa_number.trim() || null,
         visa_document_path: pilgrimFormData.visa_document_path || null,
         notes: pilgrimFormData.notes.trim() || null,
-      });
-      alert('تمت إضافة المعتمر بنجاح');
+      };
+      if (editingPilgrim) {
+        await api.put(`/api/pilgrims/${editingPilgrim.id}`, pilgrimData);
+      } else {
+        await api.post('/api/pilgrims', pilgrimData);
+      }
+      alert(editingPilgrim ? 'تم تحديث بيانات المعتمر بنجاح' : 'تمت إضافة المعتمر بنجاح');
       setShowPilgrimModal(false);
-      setPilgrimFormData({
-        name_ar: '',
-        name_en: '',
-        nationality: '',
-        passport_number: '',
-        passport_expiry_date: '',
-        date_of_birth: '',
-        gender: '',
-        visa_number: '',
-        visa_document_path: '',
-        notes: '',
-      });
+      setEditingPilgrim(null);
+      setPilgrimFormData(emptyPilgrimForm);
       setUploadedVisaFile(null);
       fetchTrip();
     } catch (error: any) {
       alert(error.response?.data?.error || 'حدث خطأ');
     } finally {
       setSavingPilgrim(false);
+    }
+  };
+
+  const openAddPilgrimModal = () => {
+    setEditingPilgrim(null);
+    setPilgrimFormData(emptyPilgrimForm);
+    setUploadedVisaFile(null);
+    setShowPilgrimModal(true);
+  };
+
+  const openEditPilgrimModal = (pilgrim: Pilgrim) => {
+    setEditingPilgrim(pilgrim);
+    setPilgrimFormData({
+      ...emptyPilgrimForm,
+      first_name_ar: pilgrim.first_name_ar || '',
+      father_name_ar: pilgrim.father_name_ar || '',
+      last_name_ar: pilgrim.last_name_ar || '',
+      first_name_en: pilgrim.first_name_en || '',
+      father_name_en: pilgrim.father_name_en || '',
+      last_name_en: pilgrim.last_name_en || '',
+      nationality: pilgrim.nationality || '',
+      passport_number: pilgrim.passport_number || '',
+      passport_expiry_date: pilgrim.passport_expiry_date?.slice(0, 10) || '',
+      date_of_birth: pilgrim.date_of_birth?.slice(0, 10) || '',
+      gender: pilgrim.gender || '',
+      visa_number: pilgrim.visa_number || '',
+      visa_document_path: pilgrim.visa_document_path || '',
+      notes: pilgrim.notes || '',
+    });
+    setUploadedVisaFile(null);
+    setShowPilgrimModal(true);
+  };
+
+  const handleDeletePilgrim = async (pilgrim: Pilgrim) => {
+    if (!confirm(`هل أنت متأكد من حذف المعتمر ${[pilgrim.first_name_ar, pilgrim.father_name_ar, pilgrim.last_name_ar].filter(Boolean).join(' ')}؟`)) {
+      return;
+    }
+
+    try {
+      await api.delete(`/api/pilgrims/${pilgrim.id}`);
+      alert('تم حذف المعتمر بنجاح');
+      fetchTrip();
+    } catch (error: any) {
+      alert(error.response?.data?.error || 'حدث خطأ أثناء الحذف');
     }
   };
 
@@ -103,7 +152,7 @@ function TripDetails() {
       const data = response.data.data;
       setPilgrimFormData({
         ...pilgrimFormData,
-        name_en: data.name_en || pilgrimFormData.name_en,
+        first_name_en: data.name_en || pilgrimFormData.first_name_en,
         passport_number: data.passport_number || pilgrimFormData.passport_number,
         passport_expiry_date: data.passport_expiry_date || pilgrimFormData.passport_expiry_date,
         date_of_birth: data.date_of_birth || pilgrimFormData.date_of_birth,
@@ -147,10 +196,10 @@ function TripDetails() {
 
       // Auto-fill other fields if available
       if (response.data.name_ar) {
-        setPilgrimFormData(prev => ({ ...prev, name_ar: response.data.name_ar }));
+        setPilgrimFormData(prev => ({ ...prev, first_name_ar: response.data.name_ar }));
       }
       if (response.data.name_en) {
-        setPilgrimFormData(prev => ({ ...prev, name_en: response.data.name_en }));
+        setPilgrimFormData(prev => ({ ...prev, first_name_en: response.data.name_en }));
       }
       if (response.data.passport_number) {
         setPilgrimFormData(prev => ({ ...prev, passport_number: response.data.passport_number }));
@@ -230,7 +279,7 @@ function TripDetails() {
             <span>كشف الركاب</span>
           </button>
           <button
-            onClick={() => setShowPilgrimModal(true)}
+            onClick={openAddPilgrimModal}
             className="btn btn-primary"
           >
             <span>➕</span>
@@ -403,7 +452,9 @@ function TripDetails() {
                           fontWeight: '600',
                         }}
                       >
-                        {pilgrim.name_ar || pilgrim.name_en || pilgrim.full_name || '-'}
+                        {[pilgrim.first_name_ar, pilgrim.father_name_ar, pilgrim.last_name_ar].filter(Boolean).join(' ') ||
+                          [pilgrim.first_name_en, pilgrim.father_name_en, pilgrim.last_name_en].filter(Boolean).join(' ') ||
+                          '-'}
                       </Link>
                     </td>
                     <td>{pilgrim.nationality}</td>
@@ -424,6 +475,20 @@ function TripDetails() {
                         >
                           عرض
                         </Link>
+                        <button
+                          type="button"
+                          onClick={() => openEditPilgrimModal(pilgrim)}
+                          className="btn btn-sm btn-secondary"
+                        >
+                          تعديل
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePilgrim(pilgrim)}
+                          className="btn btn-sm btn-danger"
+                        >
+                          حذف
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -434,7 +499,7 @@ function TripDetails() {
                     <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>👥</div>
                     <p style={{ color: '#666', marginBottom: '1rem' }}>لا يوجد معتمرين في هذه الرحلة</p>
                     <button
-                      onClick={() => setShowPilgrimModal(true)}
+                      onClick={openAddPilgrimModal}
                       className="btn btn-primary"
                     >
                       إضافة معتمر
@@ -452,7 +517,7 @@ function TripDetails() {
         <div className="modal-overlay" onClick={() => !savingPilgrim && setShowPilgrimModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '800px' }}>
             <div className="modal-header">
-              <h2 className="modal-title">إضافة معتمر جديد</h2>
+              <h2 className="modal-title">{editingPilgrim ? 'تعديل بيانات المعتمر' : 'إضافة معتمر جديد'}</h2>
               <button
                 onClick={() => !savingPilgrim && setShowPilgrimModal(false)}
                 style={{
@@ -494,23 +559,67 @@ function TripDetails() {
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                   <div className="form-group">
-                    <label className="form-label">الاسم بالعربي *</label>
+                    <label className="form-label">الاسم الأول (عربي) *</label>
                     <input
                       type="text"
                       className="form-input"
-                      value={pilgrimFormData.name_ar}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, name_ar: e.target.value })}
+                      value={pilgrimFormData.first_name_ar}
+                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, first_name_ar: e.target.value })}
                       required
                       disabled={savingPilgrim}
                     />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">الاسم بالإنكليزي</label>
+                    <label className="form-label">اسم الأب (عربي)</label>
                     <input
                       type="text"
                       className="form-input"
-                      value={pilgrimFormData.name_en}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, name_en: e.target.value })}
+                      value={pilgrimFormData.father_name_ar}
+                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, father_name_ar: e.target.value })}
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">النسبة (عربي)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={pilgrimFormData.last_name_ar}
+                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, last_name_ar: e.target.value })}
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">First Name (EN)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={pilgrimFormData.first_name_en}
+                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, first_name_en: e.target.value })}
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">Father Name (EN)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={pilgrimFormData.father_name_en}
+                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, father_name_en: e.target.value })}
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Last Name (EN)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={pilgrimFormData.last_name_en}
+                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, last_name_en: e.target.value })}
                       disabled={savingPilgrim}
                     />
                   </div>
@@ -668,7 +777,7 @@ function TripDetails() {
                       جاري الحفظ...
                     </span>
                   ) : (
-                    'إضافة'
+                    editingPilgrim ? 'حفظ التعديلات' : 'إضافة'
                   )}
                 </button>
               </div>

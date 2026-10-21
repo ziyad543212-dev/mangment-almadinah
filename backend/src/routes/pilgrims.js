@@ -124,7 +124,7 @@ router.post('/pilgrims', authenticateToken, async (req, res) => {
         first_name_en, father_name_en, last_name_en, 
         nationality, passport_number, passport_expiry_date, 
         date_of_birth, gender, visa_number, visa_document_path, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       [
         tripId,
         fNameAr, fatNameAr, lNameAr,
@@ -160,7 +160,10 @@ router.put('/pilgrims/:id', authenticateToken, async (req, res) => {
       date_of_birth, gender, visa_number, visa_document_path, notes 
     } = req.body;
 
-    if (!nationality || !passport_number) {
+    const normalizeText = (value) => (typeof value === 'string' && value.trim() ? value.trim() : null);
+    const normalizedNationality = normalizeText(nationality);
+    const normalizedPassport = normalizeText(passport_number);
+    if (!normalizedNationality || !normalizedPassport) {
       return res.status(400).json({ error: 'الجنسية ورقم جواز السفر مطلوبة' });
     }
 
@@ -173,12 +176,12 @@ router.put('/pilgrims/:id', authenticateToken, async (req, res) => {
         visa_document_path = ?, notes = ?, updated_at = CURRENT_TIMESTAMP 
       WHERE id = ?`,
       [
-        first_name_ar || null, father_name_ar || null, last_name_ar || null,
-        first_name_en || null, father_name_en || null, last_name_en || null,
-        nationality, passport_number, 
-        passport_expiry_date || null, date_of_birth || null, 
-        gender || null, visa_number || null, 
-        visa_document_path || null, notes || null, id
+        normalizeText(first_name_ar), normalizeText(father_name_ar), normalizeText(last_name_ar),
+        normalizeText(first_name_en), normalizeText(father_name_en), normalizeText(last_name_en),
+        normalizedNationality, normalizedPassport,
+        normalizeText(passport_expiry_date), normalizeText(date_of_birth),
+        normalizeText(gender), normalizeText(visa_number),
+        normalizeText(visa_document_path), normalizeText(notes), id
       ]
     );
 
