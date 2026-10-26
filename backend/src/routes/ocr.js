@@ -46,7 +46,6 @@ function getWorker() {
   return workerPromise;
 }
 
-// قاموس الأسماء العربية الشائعة
 const ARABIC_NAMES_DICT = {
   'AHMAD': 'أحمد', 'AHMED': 'أحمد', 'MOHAMMAD': 'محمد', 'MOHAMMED': 'محمد',
   'MUHAMMAD': 'محمد', 'MOHAMAD': 'محمد', 'MHD': 'محمد', 'ALI': 'علي',
@@ -129,75 +128,70 @@ function formatMrzDate(value, dateType) {
   return `${year}-${value.slice(2, 4)}-${value.slice(4, 6)}`;
 }
 
-// استخراج ذكي مع نظام بديل (Fallback) يمنع الأخطاء حتى لو فشل المدقق الرسمي
 function extractPassportData(lines) {
+  const line1 = lines[0].padEnd(44, '<');
+  const line2 = lines[1].padEnd(44, '<');
+
+  let lastNameEn = '';
+  let givenEn = '';
+
+  const nameSection = line1.slice(5);
+  const parts = nameSection.split('<<');
+  
+  if (parts.length >= 2) {
+    lastNameEn = parts[0].replace(/</g, ' ').trim();
+    givenEn = parts[1].replace(/</g, ' ').trim();
+  } else {
+    const cleanName = nameSection.replace(/</g, ' ').trim().replace(/\s+/g, ' ');
+    const spaceParts = cleanName.split(' ');
+    lastNameEn = spaceParts[0] || '';
+    givenEn = spaceParts.slice(1).join(' ');
+  }
+
+  const { firstName: firstNameEn, fatherName: fatherNameEn } = splitGivenNamesSmart(givenEn);
+
+  const passportNumber = line2.slice(0, 9).replace(/</g, '').trim();
+  const nationality = line2.slice(10, 13).replace(/</g, '').trim();
+  const birthDateRaw = line2.slice(13, 19);
+  const genderRaw = line2.slice(20, 21);
+  const expiryDateRaw = line2.slice(21, 27);
+
+  let valid = false;
   try {
     const parsed = mrz.parse(lines, { autocorrect: true });
-    if (parsed.format === 'TD3' && parsed.fields) {
-      const fields = parsed.fields;
-      const { firstName: firstNameEn, fatherName: fatherNameEn } = splitGivenNamesSmart(fields.firstName || '');
-      const lastNameEn = (fields.lastName || '').trim();
+    valid = parsed.valid;
+  } catch (e) {}
 
-      return {
-        data: {
-          first_name_en: firstNameEn,
-          father_name_en: fatherNameEn,
-          last_name_en: lastNameEn,
-          first_name_ar: transliterateToAr(firstNameEn),
-          father_name_ar: transliterateToAr(fatherNameEn),
-          last_name_ar: transliterateToAr(lastNameEn),
-          passport_number: parsed.documentNumber || fields.documentNumber || null,
-          passport_expiry_date: formatMrzDate(fields.expirationDate, 'expiration'),
-          date_of_birth: formatMrzDate(fields.birthDate, 'birth'),
-          nationality: fields.nationality || lines[1].slice(10, 13).replace(/</g, ''),
-          gender: fields.sex === 'male' ? 'M' : fields.sex === 'female' ? 'F' : (fields.sex || null)
-        },
-        valid: parsed.valid
-      };
-    }
-  } catch (e) {
-    console.log('Strict MRZ parse failed, attempting fallback extraction...');
-  }
+  return {
+    data: {
+      first_name_en: firstNameEn,
+      father_name_en: fatherNameEn,
+      last_name_en: lastNameEn,
+      first_name_ar: transliterateToAr(firstNameEn),
+      father_name_ar: transliterateToAr(fatherNameEn),
+      last_name_ar: transliterateToAr(lastNameEn),
+      passport_number: passportNumber || null,
+      passport_expiry_date: formatMrzDate(expiryDateRaw, 'expiration'),
+      date_of_birth: formatMrzDate(birthDateRaw, 'birth'),
+      nationality: nationality || 'SYR',
+      gender: genderRaw === 'M' ? 'M' : genderRaw === 'F' ? 'F' : null
+    },
+    valid
+  };
+}
 
-  // --- Fallback Parser (التحليل الاحتياطي المباشر من الأسطر) ---
-  try {
-    const line1 = lines[0].padEnd(44, '<');
-    const line2 = lines[1].padEnd(44, '<');
+function fixMrzLine1(line) {
+  let fixed = line.padEnd(44, '<').slice(0, 44);
+  return fixed.slice(0, 2) + fixed.slice(2).replace(/0/g, 'O').replace(/1/g, 'I').replace(/5/g, 'S');
+}
 
-    // استخراج الاسم من السطر الأول (مثال: P<SYRAJWAKHRI<<ZIAD<<<<<<<<<<<<<<<<<<<<<<)
-    const namePart = line1.slice(5).replace(/</g, ' ').trim().replace(/\s+/g, ' ');
-    const nameParts = namePart.split(' ');
-    const lastNameEn = nameParts[0] || '';
-    const givenEn = nameParts.slice(1).join(' ');
-    const { firstName: firstNameEn, fatherName: fatherNameEn } = splitGivenNamesSmart(givenEn);
-
-    // استخراج البيانات من السطر الثاني
-    const passportNumber = line2.slice(0, 9).replace(/</g, '').trim();
-    const nationality = line2.slice(10, 13).replace(/</g, '').trim();
-    const birthDateRaw = line2.slice(13, 19);
-    const genderRaw = line2.slice(20, 21);
-    const expiryDateRaw = line2.slice(21, 27);
-
-    return {
-      data: {
-        first_name_en: firstNameEn,
-        father_name_en: fatherNameEn,
-        last_name_en: lastNameEn,
-        first_name_ar: transliterateToAr(firstNameEn),
-        father_name_ar: transliterateToAr(fatherNameEn),
-        last_name_ar: transliterateToAr(lastNameEn),
-        passport_number: passportNumber || null,
-        passport_expiry_date: formatMrzDate(expiryDateRaw, 'expiration'),
-        date_of_birth: formatMrzDate(birthDateRaw, 'birth'),
-        nationality: nationality || 'SYR',
-        gender: genderRaw === 'M' ? 'M' : genderRaw === 'F' ? 'F' : null
-      },
-      valid: false
-    };
-  } catch (err) {
-    console.error('Fallback MRZ parser error:', err);
-    return { data: null, valid: false };
-  }
+function fixMrzLine2(line) {
+  const chars = line.padEnd(44, '<').slice(0, 44).split('');
+  const digitPositions = [9, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 42, 43];
+  const toDigit = { 'O': '0', 'Q': '0', 'D': '0', 'I': '1', 'L': '1', 'Z': '2', 'S': '5', 'B': '8' };
+  for (const pos of digitPositions) { if (toDigit[chars[pos]]) chars[pos] = toDigit[chars[pos]]; }
+  if (chars[20] === '0') chars[20] = 'M';
+  return chars.join('');
 }
 
 function sanitizeMRZLines(text) {
@@ -242,7 +236,6 @@ router.post('/ocr/passport', authenticateToken, upload.single('image'), async (r
     const croppedImagePath = path.join(tempDirectory, 'mrz-cropped.png');
     const top = height > 300 ? Math.floor(height * 0.45) : 0;
     
-    // رفع الدقة إلى 3000 بكسل لزيادة دقة التعرف على الحروف
     await sharp(orientedImage)
       .extract({ left: 0, top, width, height: height - top })
       .resize({ width: 3000, withoutEnlargement: false })
@@ -269,7 +262,7 @@ router.post('/ocr/passport', authenticateToken, upload.single('image'), async (r
     const { data, valid } = extractPassportData(lines);
     if (!data) return res.status(422).json({ warning: 'تعذر تحليل بيانات الجواز.' });
 
-    res.json({ data, ...(!valid && { warning: 'تم استخراج البيانات عبر التحليل الذكي، يرجى مراجعتها.' }) });
+    res.json({ data, ...(!valid && { warning: 'تم استخراج البيانات، يرجى مراجعتها.' }) });
   } catch (error) {
     console.error('OCR Error:', error);
     res.status(500).json({ error: 'فشلت معالجة الملف.' });
