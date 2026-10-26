@@ -10,6 +10,8 @@ function PilgrimDetail() {
   const navigate = useNavigate();
   const [pilgrim, setPilgrim] = useState<Pilgrim | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // حالات نافذة الدفعات
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentData, setPaymentData] = useState({
     amount_usd: '',
@@ -19,6 +21,24 @@ function PilgrimDetail() {
     cash_denominations: [] as Array<{ denomination: number; quantity: number; subtotal: number }>,
   });
   const [savingPayment, setSavingPayment] = useState(false);
+
+  // حالات نافذة تعديل بيانات المعتمر وقراءة الجواز (OCR)
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [savingPilgrim, setSavingPilgrim] = useState(false);
+  const [scanningPassport, setScanningPassport] = useState(false);
+  const [ocrMessage, setOcrMessage] = useState<{ type: 'success' | 'warning' | 'error'; text: string } | null>(null);
+  const [editFormData, setEditFormData] = useState({
+    first_name_ar: '',
+    father_name_ar: '',
+    last_name_ar: '',
+    first_name_en: '',
+    father_name_en: '',
+    last_name_en: '',
+    nationality: '',
+    passport_number: '',
+    visa_number: '',
+    notes: '',
+  });
 
   useEffect(() => {
     if (id) {
@@ -30,12 +50,86 @@ function PilgrimDetail() {
     setLoading(true);
     try {
       const response = await api.get(`/api/pilgrims/${id}`);
-      setPilgrim(response.data);
+      const data = response.data;
+      setPilgrim(data);
+      setEditFormData({
+        first_name_ar: data.first_name_ar || '',
+        father_name_ar: data.father_name_ar || '',
+        last_name_ar: data.last_name_ar || '',
+        first_name_en: data.first_name_en || '',
+        father_name_en: data.father_name_en || '',
+        last_name_en: data.last_name_en || '',
+        nationality: data.nationality || '',
+        passport_number: data.passport_number || '',
+        visa_number: data.visa_number || '',
+        notes: data.notes || '',
+      });
     } catch (error) {
       alert('حدث خطأ في تحميل البيانات');
       navigate('/trips');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePassportScan = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setScanningPassport(true);
+    setOcrMessage(null);
+
+    const formData = new FormData();
+    formData.append('image', file);
+
+    try {
+      const response = await api.post('/api/ocr/passport', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      const ocrData = response.data.data || {};
+      setEditFormData((prev) => ({
+        ...prev,
+        first_name_ar: ocrData.first_name_ar || prev.first_name_ar,
+        father_name_ar: ocrData.father_name_ar || prev.father_name_ar,
+        last_name_ar: ocrData.last_name_ar || prev.last_name_ar,
+        first_name_en: ocrData.first_name_en || prev.first_name_en,
+        father_name_en: ocrData.father_name_en || prev.father_name_en,
+        last_name_en: ocrData.last_name_en || prev.last_name_en,
+        passport_number: ocrData.passport_number || prev.passport_number,
+        nationality: ocrData.nationality || prev.nationality,
+      }));
+
+      if (response.data.warning) {
+        setOcrMessage({ type: 'warning', text: response.data.warning });
+      } else {
+        setOcrMessage({ type: 'success', text: 'تمت قراءة جواز السفر وتوزيع الأسماء بنجاح!' });
+      }
+    } catch (error: any) {
+      const warningMsg = error.response?.data?.warning || error.response?.data?.error || 'تعذرت قراءة الجواز، يرجى إدخال البيانات يدوياً.';
+      setOcrMessage({ type: 'error', text: warningMsg });
+    } finally {
+      setScanningPassport(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleUpdatePilgrim = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingPilgrim(true);
+
+    try {
+      await api.put(`/api/pilgrims/${id}`, {
+        ...editFormData,
+        trip_id: pilgrim?.trip_id,
+      });
+      alert('تم تحديث بيانات المعتمر بنجاح');
+      setShowEditModal(false);
+      fetchPilgrim();
+    } catch (error: any) {
+      alert(error.response?.data?.error || 'حدث خطأ أثناء التحديث');
+    } finally {
+      setSavingPilgrim(false);
     }
   };
 
@@ -173,6 +267,8 @@ function PilgrimDetail() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '1rem',
         }}
       >
         <div>
@@ -189,7 +285,16 @@ function PilgrimDetail() {
           <p style={{ color: '#666', margin: '0 0 0.5rem' }}>{fullNameEn}</p>
           <p style={{ color: '#666', margin: 0 }}>{pilgrim.nationality}</p>
         </div>
-        <div>
+        <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <button
+            onClick={() => {
+              setOcrMessage(null);
+              setShowEditModal(true);
+            }}
+            className="btn btn-primary"
+          >
+            ✏️ تعديل البيانات / قراءة الجواز
+          </button>
           <button
             onClick={handleDeletePilgrim}
             className="btn btn-danger"
@@ -199,28 +304,70 @@ function PilgrimDetail() {
         </div>
       </div>
 
-      {/* Pilgrim Details */}
+      {/* Pilgrim Details - مقسمة لـ 3 خانات واضحة */}
       <div className="card" style={{ marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '1.5rem' }}>معلومات المعتمر</h2>
+        
+        {/* الصف الأول: الأسماء بالعربية (3 خانات) */}
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-            gap: '1.5rem',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: '1rem',
+            marginBottom: '1.5rem',
+            padding: '1rem',
+            backgroundColor: '#f8f9fa',
+            borderRadius: '8px',
           }}
         >
           <div>
-            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>الاسم بالعربية (الاسم الأول / الأب / النسبة)</p>
-            <p style={{ fontSize: '1.125rem', fontWeight: '600' }}>
-              {pilgrim.first_name_ar || '-'} / {pilgrim.father_name_ar || '-'} / {pilgrim.last_name_ar || '-'}
-            </p>
+            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>الاسم الأول (عربي)</p>
+            <p style={{ fontSize: '1.125rem', fontWeight: '700', margin: 0 }}>{pilgrim.first_name_ar || '-'}</p>
           </div>
           <div>
-            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>الاسم بالإنجليزية (First / Father / Last)</p>
-            <p style={{ fontSize: '1.125rem', fontWeight: '600' }}>
-              {pilgrim.first_name_en || '-'} / {pilgrim.father_name_en || '-'} / {pilgrim.last_name_en || '-'}
-            </p>
+            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>اسم الأب (عربي)</p>
+            <p style={{ fontSize: '1.125rem', fontWeight: '700', margin: 0 }}>{pilgrim.father_name_ar || '-'}</p>
           </div>
+          <div>
+            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>النسبة (عربي)</p>
+            <p style={{ fontSize: '1.125rem', fontWeight: '700', margin: 0 }}>{pilgrim.last_name_ar || '-'}</p>
+          </div>
+        </div>
+
+        {/* الصف الثاني: الأسماء بالإنجليزية (3 خانات) */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: '1rem',
+            marginBottom: '1.5rem',
+            padding: '1rem',
+            backgroundColor: '#f8f9fa',
+            borderRadius: '8px',
+          }}
+        >
+          <div>
+            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>First Name (EN)</p>
+            <p style={{ fontSize: '1.125rem', fontWeight: '600', margin: 0 }}>{pilgrim.first_name_en || '-'}</p>
+          </div>
+          <div>
+            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Father Name (EN)</p>
+            <p style={{ fontSize: '1.125rem', fontWeight: '600', margin: 0 }}>{pilgrim.father_name_en || '-'}</p>
+          </div>
+          <div>
+            <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Last Name (EN)</p>
+            <p style={{ fontSize: '1.125rem', fontWeight: '600', margin: 0 }}>{pilgrim.last_name_en || '-'}</p>
+          </div>
+        </div>
+
+        {/* باقي المعلومات */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            gap: '1.5rem',
+          }}
+        >
           <div>
             <p style={{ color: '#666', fontSize: '0.875rem', marginBottom: '0.25rem' }}>الجنسية</p>
             <p style={{ fontSize: '1.125rem', fontWeight: '600' }}>{pilgrim.nationality}</p>
@@ -337,6 +484,194 @@ function PilgrimDetail() {
           </div>
         )}
       </div>
+
+      {/* Edit Pilgrim & OCR Modal */}
+      {showEditModal && (
+        <div className="modal-overlay" onClick={() => !savingPilgrim && setShowEditModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '750px' }}>
+            <div className="modal-header">
+              <h2 className="modal-title">تعديل بيانات المعتمر</h2>
+              <button
+                onClick={() => !savingPilgrim && setShowEditModal(false)}
+                style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#666' }}
+                disabled={savingPilgrim}
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={handleUpdatePilgrim}>
+              <div className="modal-body">
+                {/* قسم قراءة الجواز بالـ OCR */}
+                <div
+                  style={{
+                    padding: '1rem',
+                    backgroundColor: '#f0f4ff',
+                    border: '1px dashed #4a6cf7',
+                    borderRadius: '8px',
+                    marginBottom: '1.5rem',
+                  }}
+                >
+                  <label className="form-label" style={{ fontWeight: '700', marginBottom: '0.5rem', display: 'block' }}>
+                    📷 مسح جواز السفر تلقائياً (OCR)
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handlePassportScan}
+                    disabled={scanningPassport || savingPilgrim}
+                    className="form-input"
+                  />
+                  {scanningPassport && (
+                    <p style={{ color: '#4a6cf7', marginTop: '0.5rem', fontWeight: '600' }}>
+                      ⏳ جاري قراءة الجواز وترجمة الأسماء وتوزيعها على الخانات...
+                    </p>
+                  )}
+                  {ocrMessage && (
+                    <p
+                      style={{
+                        marginTop: '0.5rem',
+                        fontWeight: '600',
+                        color: ocrMessage.type === 'error' ? '#dc3545' : ocrMessage.type === 'warning' ? '#d39e00' : '#28a745',
+                      }}
+                    >
+                      {ocrMessage.text}
+                    </p>
+                  )}
+                </div>
+
+                {/* حقول الاسم بالعربية - 3 خانات */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">الاسم الأول (عربي) *</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={editFormData.first_name_ar}
+                      onChange={(e) => setEditFormData({ ...editFormData, first_name_ar: e.target.value })}
+                      required
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">اسم الأب (عربي) *</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={editFormData.father_name_ar}
+                      onChange={(e) => setEditFormData({ ...editFormData, father_name_ar: e.target.value })}
+                      required
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">النسبة (عربي) *</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={editFormData.last_name_ar}
+                      onChange={(e) => setEditFormData({ ...editFormData, last_name_ar: e.target.value })}
+                      required
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                </div>
+
+                {/* حقول الاسم بالإنجليزية - 3 خانات */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">First Name (EN)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={editFormData.first_name_en}
+                      onChange={(e) => setEditFormData({ ...editFormData, first_name_en: e.target.value })}
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Father Name (EN)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={editFormData.father_name_en}
+                      onChange={(e) => setEditFormData({ ...editFormData, father_name_en: e.target.value })}
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Last Name (EN)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={editFormData.last_name_en}
+                      onChange={(e) => setEditFormData({ ...editFormData, last_name_en: e.target.value })}
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">رقم جواز السفر *</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={editFormData.passport_number}
+                      onChange={(e) => setEditFormData({ ...editFormData, passport_number: e.target.value })}
+                      required
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">الجنسية *</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={editFormData.nationality}
+                      onChange={(e) => setEditFormData({ ...editFormData, nationality: e.target.value })}
+                      required
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">رقم الفيزا</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={editFormData.visa_number}
+                      onChange={(e) => setEditFormData({ ...editFormData, visa_number: e.target.value })}
+                      disabled={savingPilgrim}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">ملاحظات</label>
+                  <textarea
+                    className="form-textarea"
+                    value={editFormData.notes}
+                    onChange={(e) => setEditFormData({ ...editFormData, notes: e.target.value })}
+                    disabled={savingPilgrim}
+                  />
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  onClick={() => !savingPilgrim && setShowEditModal(false)}
+                  className="btn btn-secondary"
+                  disabled={savingPilgrim}
+                >
+                  إلغاء
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={savingPilgrim || scanningPassport}>
+                  {savingPilgrim ? 'جاري الحفظ...' : 'حفظ التعديلات'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Payment Modal */}
       {showPaymentModal && (

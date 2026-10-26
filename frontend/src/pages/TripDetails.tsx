@@ -3,6 +3,26 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import api from '../services/api';
 import type { Pilgrim, Trip } from '../types';
 
+const NATIONALITY_MAP: Record<string, string> = {
+  SYR: 'سوريا', SAU: 'السعودية', EGY: 'مصر', JOR: 'الأردن',
+  KWT: 'الكويت', ARE: 'الإمارات', UAE: 'الإمارات', YEM: 'اليمن',
+  IRQ: 'العراق', LBN: 'لبنان', SDN: 'السودان', PAL: 'فلسطين',
+  PSE: 'فلسطين', TUR: 'تركيا',
+};
+
+function mapMrzNationality(code?: string): string {
+  if (!code) return '';
+  return NATIONALITY_MAP[code.trim().toUpperCase()] || code;
+}
+
+function mapMrzGender(gender?: string): string {
+  if (!gender) return '';
+  const g = gender.trim().toUpperCase();
+  if (g === 'M' || g === 'MALE' || gender === 'ذكر') return 'ذكر';
+  if (g === 'F' || g === 'FEMALE' || gender === 'أنثى') return 'أنثى';
+  return '';
+}
+
 function TripDetails() {
   const emptyPilgrimForm = {
     first_name_ar: '',
@@ -20,6 +40,7 @@ function TripDetails() {
     visa_document_path: '',
     notes: '',
   };
+
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [trip, setTrip] = useState<Trip | null>(null);
@@ -33,9 +54,7 @@ function TripDetails() {
   const [savingPilgrim, setSavingPilgrim] = useState(false);
 
   useEffect(() => {
-    if (id) {
-      fetchTrip();
-    }
+    if (id) fetchTrip();
   }, [id]);
 
   const fetchTrip = async () => {
@@ -74,6 +93,7 @@ function TripDetails() {
         visa_document_path: pilgrimFormData.visa_document_path || null,
         notes: pilgrimFormData.notes.trim() || null,
       };
+
       if (editingPilgrim) {
         await api.put(`/api/pilgrims/${editingPilgrim.id}`, pilgrimData);
       } else {
@@ -109,11 +129,11 @@ function TripDetails() {
       first_name_en: pilgrim.first_name_en || '',
       father_name_en: pilgrim.father_name_en || '',
       last_name_en: pilgrim.last_name_en || '',
-      nationality: pilgrim.nationality || '',
+      nationality: mapMrzNationality(pilgrim.nationality) || '',
       passport_number: pilgrim.passport_number || '',
       passport_expiry_date: pilgrim.passport_expiry_date?.slice(0, 10) || '',
       date_of_birth: pilgrim.date_of_birth?.slice(0, 10) || '',
-      gender: pilgrim.gender || '',
+      gender: mapMrzGender(pilgrim.gender) || '',
       visa_number: pilgrim.visa_number || '',
       visa_document_path: pilgrim.visa_document_path || '',
       notes: pilgrim.notes || '',
@@ -123,10 +143,7 @@ function TripDetails() {
   };
 
   const handleDeletePilgrim = async (pilgrim: Pilgrim) => {
-    if (!confirm(`هل أنت متأكد من حذف المعتمر ${[pilgrim.first_name_ar, pilgrim.father_name_ar, pilgrim.last_name_ar].filter(Boolean).join(' ')}؟`)) {
-      return;
-    }
-
+    if (!confirm(`هل أنت متأكد من حذف المعتمر؟`)) return;
     try {
       await api.delete(`/api/pilgrims/${pilgrim.id}`);
       alert('تم حذف المعتمر بنجاح');
@@ -149,28 +166,36 @@ function TripDetails() {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
 
-      const data = response.data.data;
-      setPilgrimFormData({
-        ...pilgrimFormData,
-        first_name_en: data.name_en || pilgrimFormData.first_name_en,
-        passport_number: data.passport_number || pilgrimFormData.passport_number,
-        passport_expiry_date: data.passport_expiry_date || pilgrimFormData.passport_expiry_date,
-        date_of_birth: data.date_of_birth || pilgrimFormData.date_of_birth,
-        nationality: data.nationality || pilgrimFormData.nationality,
-        gender: data.gender || pilgrimFormData.gender,
-      });
+      const ocrData = response.data.data || {};
+      const mappedNationality = mapMrzNationality(ocrData.nationality);
+      const mappedGender = mapMrzGender(ocrData.gender);
 
-      // Show warning if extraction failed or returned partial data
+      setPilgrimFormData((prev) => ({
+        ...prev,
+        first_name_ar: ocrData.first_name_ar || prev.first_name_ar,
+        father_name_ar: ocrData.father_name_ar || prev.father_name_ar,
+        last_name_ar: ocrData.last_name_ar || prev.last_name_ar,
+        first_name_en: ocrData.first_name_en || prev.first_name_en,
+        father_name_en: ocrData.father_name_en || prev.father_name_en,
+        last_name_en: ocrData.last_name_en || prev.last_name_en,
+        passport_number: ocrData.passport_number || prev.passport_number,
+        passport_expiry_date: ocrData.passport_expiry_date || prev.passport_expiry_date,
+        date_of_birth: ocrData.date_of_birth || prev.date_of_birth,
+        nationality: mappedNationality || ocrData.nationality || prev.nationality,
+        gender: mappedGender || prev.gender,
+      }));
+
       if (response.data.warning) {
         alert(response.data.warning);
       } else {
-        alert('تم استخراج البيانات من جواز السفر بنجاح. يرجى مراجعة وتصحيح البيانات.');
+        alert('تم استخراج البيانات (الأسماء، تاريخ الميلاد، الجنسية) بنجاح!');
       }
     } catch (error: any) {
-      const errorMsg = error.response?.data?.warning || error.response?.data?.error || 'فشل في قراءة جواز السفر. يرجى إدخال البيانات يدويًا.';
+      const errorMsg = error.response?.data?.warning || error.response?.data?.error || 'فشل في قراءة الملف.';
       alert(errorMsg);
     } finally {
       setScanningPassport(false);
+      e.target.value = '';
     }
   };
 
@@ -187,35 +212,18 @@ function TripDetails() {
       const response = await api.post('/api/upload/visa', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-
-      setPilgrimFormData({
-        ...pilgrimFormData,
-        visa_document_path: response.data.visa_document_path,
-        visa_number: response.data.visa_number || pilgrimFormData.visa_number,
-      });
-
-      // Auto-fill other fields if available
-      if (response.data.name_ar) {
-        setPilgrimFormData(prev => ({ ...prev, first_name_ar: response.data.name_ar }));
-      }
-      if (response.data.name_en) {
-        setPilgrimFormData(prev => ({ ...prev, first_name_en: response.data.name_en }));
-      }
-      if (response.data.passport_number) {
-        setPilgrimFormData(prev => ({ ...prev, passport_number: response.data.passport_number }));
-      }
-
-      // Show warning if extraction failed
-      if (response.data.warning) {
-        alert(response.data.warning);
-      } else {
-        alert('تم رفع الفيزا بنجاح');
-      }
+      setPilgrimFormData((prev) => ({
+        ...prev,
+        visa_document_path: response.data.visa_document_path || prev.visa_document_path,
+        visa_number: response.data.visa_number || prev.visa_number,
+      }));
+      alert('تم رفع الفيزا بنجاح');
     } catch (error: any) {
       alert('فشل في رفع الفيزا');
       setUploadedVisaFile(null);
     } finally {
       setUploadingVisa(false);
+      e.target.value = '';
     }
   };
 
@@ -228,199 +236,20 @@ function TripDetails() {
     return colors[status] || 'badge-info';
   };
 
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}>
-        <div className="spinner" style={{ width: '40px', height: '40px' }}></div>
-      </div>
-    );
-  }
-
-  if (!trip) {
-    return (
-      <div style={{ textAlign: 'center', padding: '3rem' }}>
-        <p>الرحلة غير موجودة</p>
-        <button onClick={() => navigate('/trips')} className="btn btn-secondary">
-          العودة للقائمة
-        </button>
-      </div>
-    );
-  }
+  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}><div className="spinner" style={{ width: '40px', height: '40px' }}></div></div>;
+  if (!trip) return <div style={{ textAlign: 'center', padding: '3rem' }}><p>الرحلة غير موجودة</p></div>;
 
   return (
     <div>
-      <div
-        style={{
-          marginBottom: '2rem',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-        }}
-      >
+      <div style={{ marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <button
-            onClick={() => navigate('/trips')}
-            className="btn btn-secondary"
-            style={{ marginBottom: '1rem' }}
-          >
-            ← العودة للرحلات
-          </button>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1a1a2e', marginBottom: '0.5rem' }}>
-            {trip.name}
-          </h1>
+          <button onClick={() => navigate('/trips')} className="btn btn-secondary" style={{ marginBottom: '1rem' }}>← العودة للرحلات</button>
+          <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1a1a2e', marginBottom: '0.5rem' }}>{trip.name}</h1>
           <p style={{ color: '#666', margin: 0 }}>تاريخ الرحلة: {new Date(trip.trip_date).toLocaleDateString('ar-SA')}</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button
-            onClick={() => navigate(`/trips/${id}/manifest`)}
-            className="btn btn-secondary"
-          >
-            <span>📄</span>
-            <span>كشف الركاب</span>
-          </button>
-          <button
-            onClick={openAddPilgrimModal}
-            className="btn btn-primary"
-          >
-            <span>➕</span>
-            <span>إضافة معتمر</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Summary Cards */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-          gap: '1.5rem',
-          marginBottom: '2rem',
-        }}
-      >
-        <div
-          className="card"
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.5rem',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ fontSize: '2rem' }}>👥</span>
-            <h3 style={{ fontSize: '0.875rem', color: '#666', margin: 0, fontWeight: '600' }}>
-              عدد المعتمرين
-            </h3>
-          </div>
-          <p
-            style={{
-              fontSize: '2rem',
-              fontWeight: '700',
-              color: '#D4AF37',
-              margin: 0,
-            }}
-          >
-            {trip.pilgrim_count || 0}
-          </p>
-        </div>
-        <div
-          className="card"
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.5rem',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ fontSize: '2rem' }}>💰</span>
-            <h3 style={{ fontSize: '0.875rem', color: '#666', margin: 0, fontWeight: '600' }}>
-              إجمالي المقبوض
-            </h3>
-          </div>
-          <p
-            style={{
-              fontSize: '2rem',
-              fontWeight: '700',
-              color: '#28a745',
-              margin: 0,
-            }}
-          >
-            ${trip.total_received?.toFixed(2) || 0}
-          </p>
-        </div>
-        <div
-          className="card"
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.5rem',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ fontSize: '2rem' }}>💵</span>
-            <h3 style={{ fontSize: '0.875rem', color: '#666', margin: 0, fontWeight: '600' }}>
-              تكاليف الرحلة
-            </h3>
-          </div>
-          <p
-            style={{
-              fontSize: '2rem',
-              fontWeight: '700',
-              color: '#D4AF37',
-              margin: 0,
-            }}
-          >
-            ${trip.trip_cost_usd?.toFixed(2) || 0}
-          </p>
-        </div>
-        <div
-          className="card"
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.5rem',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ fontSize: '2rem' }}>📉</span>
-            <h3 style={{ fontSize: '0.875rem', color: '#666', margin: 0, fontWeight: '600' }}>
-              إجمالي غير المقبوض
-            </h3>
-          </div>
-          <p
-            style={{
-              fontSize: '2rem',
-              fontWeight: '700',
-              color: '#dc3545',
-              margin: 0,
-            }}
-          >
-            ${trip.total_outstanding?.toFixed(2) || 0}
-          </p>
-        </div>
-        <div
-          className="card"
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.5rem',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ fontSize: '2rem' }}>📊</span>
-            <h3 style={{ fontSize: '0.875rem', color: '#666', margin: 0, fontWeight: '600' }}>
-              صافي الرحلة
-            </h3>
-          </div>
-          <p
-            style={{
-              fontSize: '2rem',
-              fontWeight: '700',
-              color: ((trip.net_trip ?? 0) || 0) >= 0 ? '#17a2b8' : '#dc3545',
-              margin: 0,
-            }}
-          >
-            ${trip.net_trip?.toFixed(2) || 0}
-          </p>
+          <button onClick={() => navigate(`/trips/${id}/manifest`)} className="btn btn-secondary"><span>📄</span><span>كشف الركاب</span></button>
+          <button onClick={openAddPilgrimModal} className="btn btn-primary"><span>➕</span><span>إضافة معتمر</span></button>
         </div>
       </div>
 
@@ -444,51 +273,20 @@ function TripDetails() {
                 trip.pilgrims.map((pilgrim) => (
                   <tr key={pilgrim.id}>
                     <td>
-                      <Link
-                        to={`/pilgrims/${pilgrim.id}`}
-                        style={{
-                          color: '#D4AF37',
-                          textDecoration: 'none',
-                          fontWeight: '600',
-                        }}
-                      >
-                        {[pilgrim.first_name_ar, pilgrim.father_name_ar, pilgrim.last_name_ar].filter(Boolean).join(' ') ||
-                          [pilgrim.first_name_en, pilgrim.father_name_en, pilgrim.last_name_en].filter(Boolean).join(' ') ||
-                          '-'}
+                      <Link to={`/pilgrims/${pilgrim.id}`} style={{ color: '#D4AF37', textDecoration: 'none', fontWeight: '600' }}>
+                        {[pilgrim.first_name_ar, pilgrim.father_name_ar, pilgrim.last_name_ar].filter(Boolean).join(' ') || '-'}
                       </Link>
                     </td>
                     <td>{pilgrim.nationality}</td>
                     <td>{pilgrim.passport_number}</td>
                     <td>{pilgrim.visa_number || '-'}</td>
                     <td>${pilgrim.total_received?.toFixed(2) || 0}</td>
-                    <td>
-                      <span className={`badge ${getPaymentStatusBadge(pilgrim.payment_status || '')}`}>
-                        {pilgrim.payment_status || 'غير مدفوع'}
-                      </span>
-                    </td>
+                    <td><span className={`badge ${getPaymentStatusBadge(pilgrim.payment_status || '')}`}>{pilgrim.payment_status || 'غير مدفوع'}</span></td>
                     <td>
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <Link
-                          to={`/pilgrims/${pilgrim.id}`}
-                          className="btn btn-sm btn-secondary"
-                          style={{ textDecoration: 'none' }}
-                        >
-                          عرض
-                        </Link>
-                        <button
-                          type="button"
-                          onClick={() => openEditPilgrimModal(pilgrim)}
-                          className="btn btn-sm btn-secondary"
-                        >
-                          تعديل
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeletePilgrim(pilgrim)}
-                          className="btn btn-sm btn-danger"
-                        >
-                          حذف
-                        </button>
+                        <Link to={`/pilgrims/${pilgrim.id}`} className="btn btn-sm btn-secondary" style={{ textDecoration: 'none' }}>عرض</Link>
+                        <button type="button" onClick={() => openEditPilgrimModal(pilgrim)} className="btn btn-sm btn-secondary">تعديل</button>
+                        <button type="button" onClick={() => handleDeletePilgrim(pilgrim)} className="btn btn-sm btn-danger">حذف</button>
                       </div>
                     </td>
                   </tr>
@@ -496,14 +294,8 @@ function TripDetails() {
               ) : (
                 <tr>
                   <td colSpan={7} style={{ textAlign: 'center', padding: '3rem' }}>
-                    <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>👥</div>
                     <p style={{ color: '#666', marginBottom: '1rem' }}>لا يوجد معتمرين في هذه الرحلة</p>
-                    <button
-                      onClick={openAddPilgrimModal}
-                      className="btn btn-primary"
-                    >
-                      إضافة معتمر
-                    </button>
+                    <button onClick={openAddPilgrimModal} className="btn btn-primary">إضافة معتمر</button>
                   </td>
                 </tr>
               )}
@@ -512,32 +304,20 @@ function TripDetails() {
         </div>
       </div>
 
-      {/* Add Pilgrim Modal */}
+      {/* Add/Edit Pilgrim Modal */}
       {showPilgrimModal && (
         <div className="modal-overlay" onClick={() => !savingPilgrim && setShowPilgrimModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '800px' }}>
             <div className="modal-header">
               <h2 className="modal-title">{editingPilgrim ? 'تعديل بيانات المعتمر' : 'إضافة معتمر جديد'}</h2>
-              <button
-                onClick={() => !savingPilgrim && setShowPilgrimModal(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '1.5rem',
-                  cursor: 'pointer',
-                  color: '#666',
-                }}
-                disabled={savingPilgrim}
-              >
-                ✕
-              </button>
+              <button onClick={() => !savingPilgrim && setShowPilgrimModal(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#666' }}>✕</button>
             </div>
             <form onSubmit={handleAddPilgrim}>
               <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
                 {/* Passport OCR Section */}
                 <div className="form-group" style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f8f9fa', borderRadius: '8px' }}>
-                  <label className="form-label" style={{ marginBottom: '0.5rem', display: 'block' }}>
-                    📷 مسح جواز السفر (اختياري)
+                  <label className="form-label" style={{ marginBottom: '0.5rem', display: 'block', fontWeight: '700' }}>
+                    📷 مسح جواز السفر (يدعم الصور وملفات الـ PDF)
                   </label>
                   <input
                     type="file"
@@ -546,151 +326,57 @@ function TripDetails() {
                     disabled={scanningPassport || savingPilgrim}
                     style={{ marginBottom: '0.5rem' }}
                   />
-                  <p style={{ fontSize: '0.75rem', color: '#666', margin: '0.25rem 0 0 0' }}>
-                    يدعم صور JPG, PNG وملفات PDF
-                  </p>
                   {scanningPassport && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#666' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#4a6cf7', marginTop: '0.5rem', fontWeight: '600' }}>
                       <span className="spinner" style={{ width: '16px', height: '16px' }}></span>
-                      <span>جاري قراءة جواز السفر...</span>
+                      <span>جاري قراءة الجواز واستخراج البيانات...</span>
                     </div>
                   )}
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div className="form-group">
-                    <label className="form-label">الاسم الأول (عربي) *</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={pilgrimFormData.first_name_ar}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, first_name_ar: e.target.value })}
-                      required
-                      disabled={savingPilgrim}
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">اسم الأب (عربي)</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={pilgrimFormData.father_name_ar}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, father_name_ar: e.target.value })}
-                      disabled={savingPilgrim}
-                    />
-                  </div>
+                {/* الأسماء بالعربية */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+                  <div className="form-group"><label className="form-label">الاسم الأول (عربي) *</label><input type="text" className="form-input" value={pilgrimFormData.first_name_ar} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, first_name_ar: e.target.value })} required disabled={savingPilgrim} /></div>
+                  <div className="form-group"><label className="form-label">اسم الأب (عربي)</label><input type="text" className="form-input" value={pilgrimFormData.father_name_ar} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, father_name_ar: e.target.value })} disabled={savingPilgrim} /></div>
+                  <div className="form-group"><label className="form-label">النسبة (عربي)</label><input type="text" className="form-input" value={pilgrimFormData.last_name_ar} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, last_name_ar: e.target.value })} disabled={savingPilgrim} /></div>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div className="form-group">
-                    <label className="form-label">النسبة (عربي)</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={pilgrimFormData.last_name_ar}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, last_name_ar: e.target.value })}
-                      disabled={savingPilgrim}
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">First Name (EN)</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={pilgrimFormData.first_name_en}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, first_name_en: e.target.value })}
-                      disabled={savingPilgrim}
-                    />
-                  </div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div className="form-group">
-                    <label className="form-label">Father Name (EN)</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={pilgrimFormData.father_name_en}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, father_name_en: e.target.value })}
-                      disabled={savingPilgrim}
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Last Name (EN)</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={pilgrimFormData.last_name_en}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, last_name_en: e.target.value })}
-                      disabled={savingPilgrim}
-                    />
-                  </div>
+
+                {/* الأسماء بالإنجليزية */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+                  <div className="form-group"><label className="form-label">First Name (EN)</label><input type="text" className="form-input" value={pilgrimFormData.first_name_en} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, first_name_en: e.target.value })} disabled={savingPilgrim} /></div>
+                  <div className="form-group"><label className="form-label">Father Name (EN)</label><input type="text" className="form-input" value={pilgrimFormData.father_name_en} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, father_name_en: e.target.value })} disabled={savingPilgrim} /></div>
+                  <div className="form-group"><label className="form-label">Last Name (EN)</label><input type="text" className="form-input" value={pilgrimFormData.last_name_en} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, last_name_en: e.target.value })} disabled={savingPilgrim} /></div>
                 </div>
 
                 <div className="form-group">
                   <label className="form-label">الجنسية *</label>
-                  <select
-                    className="form-select"
-                    value={pilgrimFormData.nationality}
-                    onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, nationality: e.target.value })}
-                    required
-                    disabled={savingPilgrim}
-                  >
+                  <select className="form-select" value={pilgrimFormData.nationality} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, nationality: e.target.value })} required disabled={savingPilgrim}>
                     <option value="">اختر الجنسية</option>
+                    <option value="سوريا">سوريا</option>
                     <option value="السعودية">السعودية</option>
                     <option value="مصر">مصر</option>
                     <option value="الأردن">الأردن</option>
                     <option value="الكويت">الكويت</option>
                     <option value="الإمارات">الإمارات</option>
                     <option value="اليمن">اليمن</option>
-                    <option value="سوريا">سوريا</option>
                     <option value="العراق">العراق</option>
                     <option value="لبنان">لبنان</option>
                     <option value="السودان">السودان</option>
+                    <option value="فلسطين">فلسطين</option>
+                    <option value="تركيا">تركيا</option>
                   </select>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div className="form-group">
-                    <label className="form-label">رقم جواز السفر *</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={pilgrimFormData.passport_number}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, passport_number: e.target.value })}
-                      required
-                      disabled={savingPilgrim}
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">تاريخ انتهاء جواز السفر</label>
-                    <input
-                      type="date"
-                      className="form-input"
-                      value={pilgrimFormData.passport_expiry_date}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, passport_expiry_date: e.target.value })}
-                      disabled={savingPilgrim}
-                    />
-                  </div>
+                  <div className="form-group"><label className="form-label">رقم جواز السفر *</label><input type="text" className="form-input" value={pilgrimFormData.passport_number} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, passport_number: e.target.value })} required disabled={savingPilgrim} /></div>
+                  <div className="form-group"><label className="form-label">تاريخ انتهاء جواز السفر</label><input type="date" className="form-input" value={pilgrimFormData.passport_expiry_date} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, passport_expiry_date: e.target.value })} disabled={savingPilgrim} /></div>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div className="form-group">
-                    <label className="form-label">تاريخ الميلاد</label>
-                    <input
-                      type="date"
-                      className="form-input"
-                      value={pilgrimFormData.date_of_birth}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, date_of_birth: e.target.value })}
-                      disabled={savingPilgrim}
-                    />
-                  </div>
+                  <div className="form-group"><label className="form-label">تاريخ الميلاد</label><input type="date" className="form-input" value={pilgrimFormData.date_of_birth} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, date_of_birth: e.target.value })} disabled={savingPilgrim} /></div>
                   <div className="form-group">
                     <label className="form-label">الجنس</label>
-                    <select
-                      className="form-select"
-                      value={pilgrimFormData.gender}
-                      onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, gender: e.target.value })}
-                      disabled={savingPilgrim}
-                    >
+                    <select className="form-select" value={pilgrimFormData.gender} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, gender: e.target.value })} disabled={savingPilgrim}>
                       <option value="">اختر الجنس</option>
                       <option value="ذكر">ذكر</option>
                       <option value="أنثى">أنثى</option>
@@ -698,87 +384,20 @@ function TripDetails() {
                   </div>
                 </div>
 
-                {/* Visa Upload Section */}
-                <div className="form-group" style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f8f9fa', borderRadius: '8px' }}>
-                  <label className="form-label" style={{ marginBottom: '0.5rem', display: 'block' }}>
-                    📄 رفع الفيزا (اختياري)
-                  </label>
-                  <input
-                    type="file"
-                    accept="image/*,application/pdf"
-                    onChange={handleVisaUpload}
-                    disabled={uploadingVisa || savingPilgrim}
-                    style={{ marginBottom: '0.5rem' }}
-                  />
-                  <p style={{ fontSize: '0.75rem', color: '#666', margin: '0.25rem 0 0 0' }}>
-                    يدعم صور JPG, PNG وملفات PDF
-                  </p>
-                  {uploadingVisa && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#666' }}>
-                      <span className="spinner" style={{ width: '16px', height: '16px' }}></span>
-                      <span>جاري رفع الفيزا...</span>
-                    </div>
-                  )}
-                  {uploadedVisaFile && (
-                    <div style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: '#e9ecef', borderRadius: '4px' }}>
-                      {uploadedVisaFile.type === 'application/pdf' ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                          <span style={{ fontSize: '1.5rem' }}>📄</span>
-                          <div>
-                            <div style={{ fontWeight: '600', fontSize: '0.875rem' }}>{uploadedVisaFile.name}</div>
-                            <div style={{ fontSize: '0.75rem', color: '#666' }}>ملف PDF</div>
-                          </div>
-                        </div>
-                      ) : (
-                        <img
-                          src={URL.createObjectURL(uploadedVisaFile)}
-                          alt="Visa preview"
-                          style={{ maxWidth: '100%', maxHeight: '200px', borderRadius: '4px' }}
-                        />
-                      )}
-                    </div>
-                  )}
-                </div>
-
                 <div className="form-group">
                   <label className="form-label">رقم الفيزا</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={pilgrimFormData.visa_number}
-                    onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, visa_number: e.target.value })}
-                    disabled={savingPilgrim}
-                  />
+                  <input type="text" className="form-input" value={pilgrimFormData.visa_number} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, visa_number: e.target.value })} disabled={savingPilgrim} />
                 </div>
 
                 <div className="form-group">
                   <label className="form-label">ملاحظات</label>
-                  <textarea
-                    className="form-textarea"
-                    value={pilgrimFormData.notes}
-                    onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, notes: e.target.value })}
-                    disabled={savingPilgrim}
-                  />
+                  <textarea className="form-textarea" value={pilgrimFormData.notes} onChange={(e) => setPilgrimFormData({ ...pilgrimFormData, notes: e.target.value })} disabled={savingPilgrim} />
                 </div>
               </div>
               <div className="modal-footer">
-                <button
-                  type="button"
-                  onClick={() => !savingPilgrim && setShowPilgrimModal(false)}
-                  className="btn btn-secondary"
-                  disabled={savingPilgrim}
-                >
-                  إلغاء
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={savingPilgrim}>
-                  {savingPilgrim ? (
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <span className="spinner" style={{ width: '16px', height: '16px' }}></span>
-                      جاري الحفظ...
-                    </span>
-                  ) : (
-                    editingPilgrim ? 'حفظ التعديلات' : 'إضافة'
-                  )}
+                <button type="button" onClick={() => !savingPilgrim && setShowPilgrimModal(false)} className="btn btn-secondary" disabled={savingPilgrim}>إلغاء</button>
+                <button type="submit" className="btn btn-primary" disabled={savingPilgrim || scanningPassport}>
+                  {savingPilgrim ? 'جاري الحفظ...' : (editingPilgrim ? 'حفظ التعديلات' : 'إضافة')}
                 </button>
               </div>
             </form>

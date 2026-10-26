@@ -4,8 +4,14 @@ import api from '../services/api';
 
 interface Pilgrim {
   id: number;
-  name_ar: string;
-  name_en: string;
+  name_ar?: string;
+  name_en?: string;
+  first_name_ar?: string;
+  father_name_ar?: string;
+  last_name_ar?: string;
+  first_name_en?: string;
+  father_name_en?: string;
+  last_name_en?: string;
   passport_number: string;
   visa_number: string;
   nationality: string;
@@ -57,7 +63,6 @@ function PassengerManifest() {
         responseType: 'blob'
       });
 
-      // Create download link
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
@@ -73,6 +78,22 @@ function PassengerManifest() {
     } finally {
       setGeneratingPdf(false);
     }
+  };
+
+  const getFullNameAr = (pilgrim: Pilgrim) => {
+    const splitName = [pilgrim.first_name_ar, pilgrim.father_name_ar, pilgrim.last_name_ar]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    return splitName || pilgrim.name_ar || '-';
+  };
+
+  const getFullNameEn = (pilgrim: Pilgrim) => {
+    const splitName = [pilgrim.first_name_en, pilgrim.father_name_en, pilgrim.last_name_en]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    return splitName || pilgrim.name_en || '-';
   };
 
   if (loading) {
@@ -152,8 +173,8 @@ function PassengerManifest() {
                 pilgrims.map((pilgrim, index) => (
                   <tr key={pilgrim.id}>
                     <td>{index + 1}</td>
-                    <td>{pilgrim.name_ar || '-'}</td>
-                    <td>{pilgrim.name_en || '-'}</td>
+                    <td>{getFullNameAr(pilgrim)}</td>
+                    <td>{getFullNameEn(pilgrim)}</td>
                     <td>{pilgrim.passport_number}</td>
                     <td>{pilgrim.visa_number || '-'}</td>
                     <td>{pilgrim.nationality}</td>
