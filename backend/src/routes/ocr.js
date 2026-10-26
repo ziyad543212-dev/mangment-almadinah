@@ -11,8 +11,9 @@ const { authenticateToken } = require('../auth');
 const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024, files: 1 }
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 }
 });
+
 const OCR_CACHE_DIR = process.env.TESSERACT_CACHE_DIR
   || path.join(os.tmpdir(), 'tesseract-cache');
 const MRZ_WHITELIST = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<';
@@ -42,186 +43,241 @@ function getWorker() {
       throw error;
     });
   }
-
   return workerPromise;
 }
 
-function sanitizeMRZLines(text) {
-  const lines = text
-    .toUpperCase()
-    .split(/\r?\n/)
-    .map((line) => line.replace(/[^A-Z0-9<]/g, ''))
-    .filter((line) => line.includes('<') || line.length === 44)
-    .filter((line) => line.length === 44);
+// قاموس الأسماء العربية الشائعة
+const ARABIC_NAMES_DICT = {
+  'AHMAD': 'أحمد', 'AHMED': 'أحمد', 'MOHAMMAD': 'محمد', 'MOHAMMED': 'محمد',
+  'MUHAMMAD': 'محمد', 'MOHAMAD': 'محمد', 'MHD': 'محمد', 'ALI': 'علي',
+  'OMAR': 'عمر', 'KHALED': 'خالد', 'KHALID': 'خالد', 'IBRAHIM': 'إبراهيم',
+  'YOUSEF': 'يوسف', 'YOUSIF': 'يوسف', 'YUSUF': 'يوسف', 'HASSAN': 'حسن',
+  'HUSSEIN': 'حسين', 'MAHMOUD': 'محمود', 'MUSTAFA': 'مصطفى', 'SALEH': 'صالح',
+  'ABDULLAH': 'عبد الله', 'ABDALLAH': 'عبد الله', 'ABDULRAHMAN': 'عبد الرحمن',
+  'MAJED': 'ماجد', 'SAMI': 'سامي', 'RAMI': 'رامي', 'TAREK': 'طارق', 'ZIAD': 'زياد'
+};
 
-  const firstLine = lines.find((line) => /^P[A-Z<][A-Z0-9<]{42}$/.test(line));
-  const secondLine = lines.find((line) => /^\w{9}[0-9][A-Z]{3}[0-9]{7}[MF<][0-9]{7}[A-Z0-9<]{14}[0-9]{2}$/.test(line));
+function phoneticWordToAr(word) {
+  if (!word) return '';
+  let w = word.toUpperCase().trim();
+  if (ARABIC_NAMES_DICT[w]) return ARABIC_NAMES_DICT[w];
+  let prefix = '';
+  if (w.startsWith('AL') && w.length > 3) { prefix = 'ال'; w = w.slice(2); }
+  else if (w.startsWith('EL') && w.length > 3) { prefix = 'ال'; w = w.slice(2); }
+  if (ARABIC_NAMES_DICT[w]) return prefix + ARABIC_NAMES_DICT[w];
 
-  if (!firstLine || !secondLine) return [];
-  return [firstLine, secondLine];
+  let res = w.replace(/KH/g, 'خ').replace(/GH/g, 'غ').replace(/SH/g, 'ش').replace(/TH/g, 'ث').replace(/DH/g, 'ذ').replace(/PH/g, 'ف').replace(/AA/g, 'ا').replace(/EE/g, 'ي').replace(/OO/g, 'و');
+  res = res.replace(/^A/, 'أ').replace(/^I/, 'إ').replace(/^E/, 'إ').replace(/^U/, 'أ');
+  res = res.replace(/AH$/, 'ة').replace(/EH$/, 'ة');
+
+  const charMap = {
+    'A': 'ا', 'B': 'ب', 'C': 'ك', 'D': 'د', 'E': 'ي', 'F': 'ف', 'G': 'ج',
+    'H': 'ه', 'I': 'ي', 'J': 'ج', 'K': 'ك', 'L': 'ل', 'M': 'م', 'N': 'ن',
+    'O': 'و', 'P': 'ب', 'Q': 'ق', 'R': 'ر', 'S': 'س', 'T': 'ت', 'U': 'و',
+    'V': 'ف', 'W': 'و', 'X': 'كس', 'Y': 'ي', 'Z': 'ز'
+  };
+  let finalAr = '';
+  for (const ch of res) { finalAr += charMap[ch] !== undefined ? charMap[ch] : ch; }
+  return prefix + finalAr.replace(/اا+/g, 'ا');
+}
+
+function transliterateToAr(enText) {
+  if (!enText) return '';
+  const clean = enText.toUpperCase().trim().replace(/\s+/g, ' ');
+  const words = clean.split(' ');
+  const result = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if ((w === 'ABD' || w === 'ABDEL' || w === 'ABDUL') && words[i + 1]) {
+      result.push('عبد');
+    } else if ((w === 'AL' || w === 'EL') && words[i + 1]) {
+      const nextTranslated = phoneticWordToAr(words[i + 1]);
+      result.push(nextTranslated.startsWith('ال') ? nextTranslated : 'ال' + nextTranslated);
+      i++;
+    } else {
+      result.push(phoneticWordToAr(w));
+    }
+  }
+  return result.join(' ');
+}
+
+function splitGivenNamesSmart(givenNamesStr) {
+  if (!givenNamesStr) return { firstName: '', fatherName: '' };
+  const rawWords = givenNamesStr.trim().split(/\s+/).filter(Boolean);
+  if (rawWords.length <= 1) return { firstName: rawWords[0] || '', fatherName: '' };
+  const grouped = [];
+  let i = 0;
+  while (i < rawWords.length) {
+    const w = rawWords[i].toUpperCase();
+    if (['ABD', 'ABDEL', 'ABDUL', 'ABU', 'AL', 'EL', 'IBN', 'BIN'].includes(w) && rawWords[i + 1]) {
+      grouped.push(`${rawWords[i]} ${rawWords[i + 1]}`);
+      i += 2;
+    } else {
+      grouped.push(rawWords[i]);
+      i += 1;
+    }
+  }
+  return { firstName: grouped[0] || '', fatherName: grouped.slice(1).join(' ') || '' };
 }
 
 function formatMrzDate(value, dateType) {
   if (!/^\d{6}$/.test(value || '')) return null;
-
   const currentYear = new Date().getFullYear();
   const currentTwoDigitYear = currentYear % 100;
   const twoDigitYear = Number(value.slice(0, 2));
-  let year;
-
-  if (dateType === 'birth') {
-    year = twoDigitYear > currentTwoDigitYear ? 1900 + twoDigitYear : 2000 + twoDigitYear;
-  } else {
-    const currentCentury = Math.floor(currentYear / 100) * 100;
-    year = currentCentury + twoDigitYear;
-    if (year > currentYear + 20) year -= 100;
-    if (year < currentYear - 50) year += 100;
-  }
-
-  const month = value.slice(2, 4);
-  const day = value.slice(4, 6);
-  return `${year}-${month}-${day}`;
+  let year = dateType === 'birth' ? (twoDigitYear > currentTwoDigitYear ? 1900 + twoDigitYear : 2000 + twoDigitYear) : Math.floor(currentYear / 100) * 100 + twoDigitYear;
+  return `${year}-${value.slice(2, 4)}-${value.slice(4, 6)}`;
 }
 
+// استخراج ذكي مع نظام بديل (Fallback) يمنع الأخطاء حتى لو فشل المدقق الرسمي
 function extractPassportData(lines) {
-  const parsed = mrz.parse(lines, { autocorrect: true });
-  if (parsed.format !== 'TD3') {
+  try {
+    const parsed = mrz.parse(lines, { autocorrect: true });
+    if (parsed.format === 'TD3' && parsed.fields) {
+      const fields = parsed.fields;
+      const { firstName: firstNameEn, fatherName: fatherNameEn } = splitGivenNamesSmart(fields.firstName || '');
+      const lastNameEn = (fields.lastName || '').trim();
+
+      return {
+        data: {
+          first_name_en: firstNameEn,
+          father_name_en: fatherNameEn,
+          last_name_en: lastNameEn,
+          first_name_ar: transliterateToAr(firstNameEn),
+          father_name_ar: transliterateToAr(fatherNameEn),
+          last_name_ar: transliterateToAr(lastNameEn),
+          passport_number: parsed.documentNumber || fields.documentNumber || null,
+          passport_expiry_date: formatMrzDate(fields.expirationDate, 'expiration'),
+          date_of_birth: formatMrzDate(fields.birthDate, 'birth'),
+          nationality: fields.nationality || lines[1].slice(10, 13).replace(/</g, ''),
+          gender: fields.sex === 'male' ? 'M' : fields.sex === 'female' ? 'F' : (fields.sex || null)
+        },
+        valid: parsed.valid
+      };
+    }
+  } catch (e) {
+    console.log('Strict MRZ parse failed, attempting fallback extraction...');
+  }
+
+  // --- Fallback Parser (التحليل الاحتياطي المباشر من الأسطر) ---
+  try {
+    const line1 = lines[0].padEnd(44, '<');
+    const line2 = lines[1].padEnd(44, '<');
+
+    // استخراج الاسم من السطر الأول (مثال: P<SYRAJWAKHRI<<ZIAD<<<<<<<<<<<<<<<<<<<<<<)
+    const namePart = line1.slice(5).replace(/</g, ' ').trim().replace(/\s+/g, ' ');
+    const nameParts = namePart.split(' ');
+    const lastNameEn = nameParts[0] || '';
+    const givenEn = nameParts.slice(1).join(' ');
+    const { firstName: firstNameEn, fatherName: fatherNameEn } = splitGivenNamesSmart(givenEn);
+
+    // استخراج البيانات من السطر الثاني
+    const passportNumber = line2.slice(0, 9).replace(/</g, '').trim();
+    const nationality = line2.slice(10, 13).replace(/</g, '').trim();
+    const birthDateRaw = line2.slice(13, 19);
+    const genderRaw = line2.slice(20, 21);
+    const expiryDateRaw = line2.slice(21, 27);
+
+    return {
+      data: {
+        first_name_en: firstNameEn,
+        father_name_en: fatherNameEn,
+        last_name_en: lastNameEn,
+        first_name_ar: transliterateToAr(firstNameEn),
+        father_name_ar: transliterateToAr(fatherNameEn),
+        last_name_ar: transliterateToAr(lastNameEn),
+        passport_number: passportNumber || null,
+        passport_expiry_date: formatMrzDate(expiryDateRaw, 'expiration'),
+        date_of_birth: formatMrzDate(birthDateRaw, 'birth'),
+        nationality: nationality || 'SYR',
+        gender: genderRaw === 'M' ? 'M' : genderRaw === 'F' ? 'F' : null
+      },
+      valid: false
+    };
+  } catch (err) {
+    console.error('Fallback MRZ parser error:', err);
     return { data: null, valid: false };
   }
-
-  const fields = parsed.fields;
-  const data = {
-    name_en: [fields.firstName, fields.lastName].filter(Boolean).join(' '),
-    passport_number: parsed.documentNumber || fields.documentNumber || null,
-    passport_expiry_date: formatMrzDate(fields.expirationDate, 'expiration'),
-    date_of_birth: formatMrzDate(fields.birthDate, 'birth'),
-    nationality: fields.nationality || lines[1].slice(10, 13),
-    gender: fields.sex || null
-  };
-
-  return { data, valid: parsed.valid };
 }
 
-async function preprocessPassportImage(buffer, outputPath) {
-  const orientedImage = await sharp(buffer, { limitInputPixels: MAX_IMAGE_PIXELS })
-    .rotate()
-    .toBuffer();
-  const { width, height, format } = await sharp(orientedImage, {
-    limitInputPixels: MAX_IMAGE_PIXELS
-  }).metadata();
+function sanitizeMRZLines(text) {
+  const rawLines = text
+    .toUpperCase()
+    .split(/\r?\n/)
+    .map((l) => l.replace(/[^A-Z0-9<]/g, '').trim())
+    .filter((l) => l.length >= 35 && l.length <= 50);
 
-  if (!width || !height || !format) {
-    throw new Error('Unsupported or invalid passport image');
+  let firstLine = rawLines.find((l) => l.startsWith('P') && l.includes('<<')) ||
+                  rawLines.find((l) => l.startsWith('P') && l.length >= 38);
+
+  let secondLine = rawLines.find((l) => l !== firstLine && /\d{6}/.test(l) && l.length >= 38) ||
+                   rawLines.find((l) => l !== firstLine && !l.startsWith('P') && l.length >= 38);
+
+  if (!firstLine || !secondLine) {
+    const sorted = rawLines.filter(l => l.length >= 38).sort((a, b) => Math.abs(a.length - 44) - Math.abs(b.length - 44));
+    if (sorted.length >= 2) {
+      firstLine = sorted[0].padEnd(44, '<').slice(0, 44);
+      secondLine = sorted[1].padEnd(44, '<').slice(0, 44);
+    }
   }
 
-  const top = Math.floor(height * 0.6);
-  const cropHeight = height - top;
-
-  if (cropHeight < 1) {
-    throw new Error('Passport image is too small to process');
-  }
-
-  await sharp(orientedImage)
-    .extract({ left: 0, top, width, height: cropHeight })
-    .resize({ width: 2200 })
-    .grayscale()
-    .normalize()
-    .sharpen({ sigma: 2.5 })
-    .png()
-    .toFile(outputPath);
+  if (!firstLine || !secondLine) return [];
+  return [
+    firstLine.padEnd(44, '<').slice(0, 44),
+    secondLine.padEnd(44, '<').slice(0, 44)
+  ];
 }
 
-router.post(
-  '/ocr/passport',
-  authenticateToken,
-  (req, res, next) => {
-    upload.single('image')(req, res, (error) => {
-      if (!error) return next();
+router.post('/ocr/passport', authenticateToken, upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'الملف مطلوب' });
 
-      console.error('Passport upload error:', error);
-      const status = error instanceof multer.MulterError ? 400 : 500;
-      return res.status(status).json({
-        error: status === 400 ? 'Invalid or oversized passport image' : 'Passport upload failed'
-      });
-    });
-  },
-  async (req, res) => {
-    if (!req.file) {
-      return res.status(400).json({ error: 'Passport image is required' });
+  let tempDirectory;
+  try {
+    tempDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'passport-ocr-'));
+    const worker = await getWorker();
+
+    const orientedImage = await sharp(req.file.buffer, { limitInputPixels: MAX_IMAGE_PIXELS }).rotate().toBuffer();
+    const { width, height } = await sharp(orientedImage).metadata();
+    
+    const croppedImagePath = path.join(tempDirectory, 'mrz-cropped.png');
+    const top = height > 300 ? Math.floor(height * 0.45) : 0;
+    
+    // رفع الدقة إلى 3000 بكسل لزيادة دقة التعرف على الحروف
+    await sharp(orientedImage)
+      .extract({ left: 0, top, width, height: height - top })
+      .resize({ width: 3000, withoutEnlargement: false })
+      .grayscale()
+      .normalize()
+      .sharpen({ sigma: 1.5 })
+      .png()
+      .toFile(croppedImagePath);
+
+    let { data: { text } } = await worker.recognize(croppedImagePath);
+    let lines = sanitizeMRZLines(text);
+
+    if (lines.length !== 2) {
+      const fullImagePath = path.join(tempDirectory, 'mrz-full.png');
+      await sharp(orientedImage).resize({ width: 3000 }).grayscale().normalize().png().toFile(fullImagePath);
+      const fullResult = await worker.recognize(fullImagePath);
+      lines = sanitizeMRZLines(fullResult.data.text);
     }
 
-    let tempDirectory;
-    try {
-      let metadata;
-      try {
-        metadata = await sharp(req.file.buffer, {
-          limitInputPixels: MAX_IMAGE_PIXELS
-        }).metadata();
-      } catch {
-        return res.status(400).json({ error: 'Unsupported or invalid passport image' });
-      }
+    if (lines.length !== 2) {
+      return res.status(422).json({ warning: 'لم يتمكن النظام من قراءة شريط الجواز (MRZ). تأكد من وضوح الصورة.' });
+    }
 
-      if (
-        !metadata.width
-        || !metadata.height
-        || !['jpeg', 'png', 'webp', 'tiff', 'gif', 'heif', 'avif'].includes(metadata.format)
-      ) {
-        return res.status(400).json({ error: 'Unsupported or invalid passport image' });
-      }
+    const { data, valid } = extractPassportData(lines);
+    if (!data) return res.status(422).json({ warning: 'تعذر تحليل بيانات الجواز.' });
 
-      tempDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'passport-ocr-'));
-      const processedImagePath = path.join(tempDirectory, 'mrz.png');
-      await preprocessPassportImage(req.file.buffer, processedImagePath);
-
-      const worker = await getWorker();
-      const { data: { text } } = await worker.recognize(processedImagePath);
-      const lines = sanitizeMRZLines(text);
-
-      if (lines.length !== 2) {
-        return res.status(422).json({
-          warning: 'لم يتمكن النظام من قراءة منطقة جواز السفر. يرجى تجربة صورة أوضح أو إدخال البيانات يدويًا.'
-        });
-      }
-
-      const { data, valid } = extractPassportData(lines);
-      if (!data) {
-        return res.status(422).json({
-          warning: 'لم يتم التعرف على بيانات جواز سفر بصيغة MRZ صالحة. يرجى إدخال البيانات يدويًا.'
-        });
-      }
-
-      const hasExtractedData = Object.values(data).some(Boolean);
-      if (!hasExtractedData) {
-        return res.status(422).json({
-          warning: 'لم يتم استخراج بيانات من الصورة. يرجى إدخال البيانات يدويًا.'
-        });
-      }
-
-      res.json({
-        data,
-        ...(!valid && {
-          warning: 'تم استخراج بعض البيانات، لكن تعذر التحقق من جميع رموز جواز السفر. يرجى مراجعة البيانات.'
-        })
-      });
-    } catch (error) {
-      console.error('Passport OCR processing error:', error);
-      res.status(500).json({
-        error: 'فشلت معالجة صورة جواز السفر. يرجى المحاولة مرة أخرى.'
-      });
-    } finally {
-      if (tempDirectory) {
-        try {
-          await fs.promises.rm(tempDirectory, { recursive: true, force: true });
-        } catch (error) {
-          console.error('Passport OCR temporary file cleanup error:', error);
-        }
-      }
+    res.json({ data, ...(!valid && { warning: 'تم استخراج البيانات عبر التحليل الذكي، يرجى مراجعتها.' }) });
+  } catch (error) {
+    console.error('OCR Error:', error);
+    res.status(500).json({ error: 'فشلت معالجة الملف.' });
+  } finally {
+    if (tempDirectory) {
+      await fs.promises.rm(tempDirectory, { recursive: true, force: true }).catch(() => {});
     }
   }
-);
+});
 
 module.exports = router;
-module.exports.sanitizeMRZLines = sanitizeMRZLines;
-module.exports.formatMrzDate = formatMrzDate;
-module.exports.extractPassportData = extractPassportData;
-module.exports.preprocessPassportImage = preprocessPassportImage;
