@@ -45,13 +45,25 @@ function TripDetails() {
   const navigate = useNavigate();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [loading, setLoading] = useState(true);
+  
+  // نوافذ المعتمرين
   const [showPilgrimModal, setShowPilgrimModal] = useState(false);
   const [pilgrimFormData, setPilgrimFormData] = useState(emptyPilgrimForm);
   const [editingPilgrim, setEditingPilgrim] = useState<Pilgrim | null>(null);
   const [scanningPassport, setScanningPassport] = useState(false);
-  const [uploadingVisa, setUploadingVisa] = useState(false);
-  const [uploadedVisaFile, setUploadedVisaFile] = useState<File | null>(null);
   const [savingPilgrim, setSavingPilgrim] = useState(false);
+
+  // نافذة تعديل بيانات الرحلة (المركبة والسائقين)
+  const [showEditTripModal, setShowEditTripModal] = useState(false);
+  const [tripFormData, setTripFormData] = useState({
+    name: '',
+    trip_date: '',
+    vehicle_number: '',
+    driver_one_name: '',
+    driver_two_name: '',
+    trip_cost_usd: '',
+  });
+  const [savingTrip, setSavingTrip] = useState(false);
 
   useEffect(() => {
     if (id) fetchTrip();
@@ -62,11 +74,37 @@ function TripDetails() {
     try {
       const response = await api.get(`/api/trips/${id}`);
       setTrip(response.data);
+      setTripFormData({
+        name: response.data.name || '',
+        trip_date: response.data.trip_date?.slice(0, 10) || '',
+        vehicle_number: response.data.vehicle_number || '',
+        driver_one_name: response.data.driver_one_name || '',
+        driver_two_name: response.data.driver_two_name || '',
+        trip_cost_usd: response.data.trip_cost_usd?.toString() || '',
+      });
     } catch (error) {
       alert('حدث خطأ في تحميل البيانات');
       navigate('/trips');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleUpdateTrip = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingTrip(true);
+    try {
+      await api.put(`/api/trips/${id}`, {
+        ...tripFormData,
+        trip_cost_usd: parseFloat(tripFormData.trip_cost_usd) || 0,
+      });
+      alert('تم تحديث تفاصيل الرحلة بنجاح');
+      setShowEditTripModal(false);
+      fetchTrip();
+    } catch (error: any) {
+      alert(error.response?.data?.error || 'حدث خطأ أثناء تحديث الرحلة');
+    } finally {
+      setSavingTrip(false);
     }
   };
 
@@ -103,7 +141,6 @@ function TripDetails() {
       setShowPilgrimModal(false);
       setEditingPilgrim(null);
       setPilgrimFormData(emptyPilgrimForm);
-      setUploadedVisaFile(null);
       fetchTrip();
     } catch (error: any) {
       alert(error.response?.data?.error || 'حدث خطأ');
@@ -115,7 +152,6 @@ function TripDetails() {
   const openAddPilgrimModal = () => {
     setEditingPilgrim(null);
     setPilgrimFormData(emptyPilgrimForm);
-    setUploadedVisaFile(null);
     setShowPilgrimModal(true);
   };
 
@@ -138,7 +174,6 @@ function TripDetails() {
       visa_document_path: pilgrim.visa_document_path || '',
       notes: pilgrim.notes || '',
     });
-    setUploadedVisaFile(null);
     setShowPilgrimModal(true);
   };
 
@@ -188,41 +223,13 @@ function TripDetails() {
       if (response.data.warning) {
         alert(response.data.warning);
       } else {
-        alert('تم استخراج البيانات (الأسماء، تاريخ الميلاد، الجنسية) بنجاح!');
+        alert('تم استخراج البيانات بنجاح!');
       }
     } catch (error: any) {
       const errorMsg = error.response?.data?.warning || error.response?.data?.error || 'فشل في قراءة الملف.';
       alert(errorMsg);
     } finally {
       setScanningPassport(false);
-      e.target.value = '';
-    }
-  };
-
-  const handleVisaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setUploadingVisa(true);
-    setUploadedVisaFile(file);
-    const formData = new FormData();
-    formData.append('visa', file);
-
-    try {
-      const response = await api.post('/api/upload/visa', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
-      setPilgrimFormData((prev) => ({
-        ...prev,
-        visa_document_path: response.data.visa_document_path || prev.visa_document_path,
-        visa_number: response.data.visa_number || prev.visa_number,
-      }));
-      alert('تم رفع الفيزا بنجاح');
-    } catch (error: any) {
-      alert('فشل في رفع الفيزا');
-      setUploadedVisaFile(null);
-    } finally {
-      setUploadingVisa(false);
       e.target.value = '';
     }
   };
@@ -241,15 +248,35 @@ function TripDetails() {
 
   return (
     <div>
-      <div style={{ marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{ marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
           <button onClick={() => navigate('/trips')} className="btn btn-secondary" style={{ marginBottom: '1rem' }}>← العودة للرحلات</button>
           <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1a1a2e', marginBottom: '0.5rem' }}>{trip.name}</h1>
           <p style={{ color: '#666', margin: 0 }}>تاريخ الرحلة: {new Date(trip.trip_date).toLocaleDateString('ar-SA')}</p>
         </div>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <button onClick={() => setShowEditTripModal(true)} className="btn btn-secondary"><span>🚌</span><span>تعديل بيانات المركبة والسائقين</span></button>
           <button onClick={() => navigate(`/trips/${id}/manifest`)} className="btn btn-secondary"><span>📄</span><span>كشف الركاب</span></button>
           <button onClick={openAddPilgrimModal} className="btn btn-primary"><span>➕</span><span>إضافة معتمر</span></button>
+        </div>
+      </div>
+
+      {/* عرض تفاصيل المركبة والسائقين الحالية */}
+      <div className="card" style={{ marginBottom: '1.5rem', backgroundColor: '#f8f9fa' }}>
+        <h3 style={{ fontSize: '1rem', fontWeight: '700', marginBottom: '0.75rem', color: '#1a1a2e' }}>معلومات الحافلة والسائقين</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+          <div>
+            <span style={{ color: '#666', fontSize: '0.875rem' }}>رقم المركبة: </span>
+            <strong>{trip.vehicle_number || 'غير محدد'}</strong>
+          </div>
+          <div>
+            <span style={{ color: '#666', fontSize: '0.875rem' }}>السائق الأول: </span>
+            <strong>{trip.driver_one_name || 'غير محدد'}</strong>
+          </div>
+          <div>
+            <span style={{ color: '#666', fontSize: '0.875rem' }}>السائق الثاني: </span>
+            <strong>{trip.driver_two_name || 'غير محدد'}</strong>
+          </div>
         </div>
       </div>
 
@@ -303,6 +330,61 @@ function TripDetails() {
           </table>
         </div>
       </div>
+
+      {/* Edit Trip Modal (Vehicle & Drivers) */}
+      {showEditTripModal && (
+        <div className="modal-overlay" onClick={() => !savingTrip && setShowEditTripModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
+            <div className="modal-header">
+              <h2 className="modal-title">تعديل معلومات المركبة والسائقين</h2>
+              <button onClick={() => !savingTrip && setShowEditTripModal(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#666' }}>✕</button>
+            </div>
+            <form onSubmit={handleUpdateTrip}>
+              <div className="modal-body">
+                <div className="form-group">
+                  <label className="form-label">رقم المركبة</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={tripFormData.vehicle_number}
+                    onChange={(e) => setTripFormData({ ...tripFormData, vehicle_number: e.target.value })}
+                    placeholder="مثال: لوحة رقم 12345"
+                    disabled={savingTrip}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">اسم السائق الأول</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={tripFormData.driver_one_name}
+                    onChange={(e) => setTripFormData({ ...tripFormData, driver_one_name: e.target.value })}
+                    placeholder="اسم السائق الأول الكامل"
+                    disabled={savingTrip}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">اسم السائق الثاني</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={tripFormData.driver_two_name}
+                    onChange={(e) => setTripFormData({ ...tripFormData, driver_two_name: e.target.value })}
+                    placeholder="اسم السائق الثاني الكامل (إن وُجد)"
+                    disabled={savingTrip}
+                  />
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" onClick={() => !savingTrip && setShowEditTripModal(false)} className="btn btn-secondary" disabled={savingTrip}>إلغاء</button>
+                <button type="submit" className="btn btn-primary" disabled={savingTrip}>
+                  {savingTrip ? 'جاري الحفظ...' : 'حفظ التعديلات'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Add/Edit Pilgrim Modal */}
       {showPilgrimModal && (

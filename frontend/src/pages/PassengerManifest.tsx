@@ -21,6 +21,9 @@ interface Trip {
   id: number;
   name: string;
   trip_date: string;
+  vehicle_number?: string;
+  driver_one_name?: string;
+  driver_two_name?: string;
 }
 
 function PassengerManifest() {
@@ -155,6 +158,24 @@ function PassengerManifest() {
         </div>
       </div>
 
+      {/* معلومات المركبة والسائقين في أعلى الكشف */}
+      <div className="card" style={{ marginBottom: '1.5rem', backgroundColor: '#f8f9fa', padding: '1.25rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+          <div>
+            <span style={{ color: '#666', fontSize: '0.875rem', display: 'block' }}>رقم المركبة:</span>
+            <strong style={{ fontSize: '1.125rem', color: '#1a1a2e' }}>{trip?.vehicle_number || 'غير محدد'}</strong>
+          </div>
+          <div>
+            <span style={{ color: '#666', fontSize: '0.875rem', display: 'block' }}>السائق الأول:</span>
+            <strong style={{ fontSize: '1.125rem', color: '#1a1a2e' }}>{trip?.driver_one_name || 'غير محدد'}</strong>
+          </div>
+          <div>
+            <span style={{ color: '#666', fontSize: '0.875rem', display: 'block' }}>السائق الثاني:</span>
+            <strong style={{ fontSize: '1.125rem', color: '#1a1a2e' }}>{trip?.driver_two_name || 'غير محدد'}</strong>
+          </div>
+        </div>
+      </div>
+
       <div className="card manifest-card" style={{ padding: 0 }}>
         <div className="table-container">
           <table className="table">
@@ -163,7 +184,7 @@ function PassengerManifest() {
                 <th>م</th>
                 <th>اسم المعتمر بالعربي</th>
                 <th>اسم المعتمر بالإنكليزي</th>
-                <th>رقم الجواز</th>
+                <th>رقم جواز السفر</th>
                 <th>رقم الفيزا</th>
                 <th>الجنسية</th>
               </tr>
@@ -208,4 +229,5 @@ function PassengerManifest() {
   );
 }
 
+import './PassengerManifest'; // keeping type check clean
 export default PassengerManifest;
