@@ -164,6 +164,55 @@ function formatMrzDate(value, dateType) {
   return `${year}-${value.slice(2, 4)}-${value.slice(4, 6)}`;
 }
 
+// دالة لاستخراج الأسماء العربية مباشرة من النصوص المرئية في الجواز (Visual Zone)
+function extractArabicFieldsFromVisualText(fullText) {
+  if (!fullText) return { first_ar: '', father_ar: '', last_ar: '' };
+  
+  const lines = fullText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  let first_ar = '';
+  let father_ar = '';
+  let last_ar = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    if (line.includes('الاسم') || line.includes('Name')) {
+      // البحث في نفس السطر أو السطر التالي عن الكلمات العربية
+      const nextLine = lines[i + 1] || '';
+      const targetStr = line + ' ' + nextLine;
+      const arabicMatches = targetStr.match(/[\u0600-\u06FF]+/g);
+      if (arabicMatches && arabicMatches.length > 0) {
+        // تصفية الكلمات الترويجية
+        const filtered = arabicMatches.filter(w => !['الجمهورية', 'العربية', 'السورية', 'جواز', 'سفر', 'الاسم', 'النسبة'].includes(w));
+        if (filtered[0] && !first_ar) first_ar = filtered[0];
+        if (filtered[1] && !father_ar) father_ar = filtered[1];
+      }
+    }
+
+    if (line.includes('النسبة') || line.includes('Surname')) {
+      const nextLine = lines[i + 1] || '';
+      const targetStr = line + ' ' + nextLine;
+      const arabicMatches = targetStr.match(/[\u0600-\u06FF]+/g);
+      if (arabicMatches && arabicMatches.length > 0) {
+        const filtered = arabicMatches.filter(w => !['النسبة', 'الاب', 'الأب', 'الام', 'الأم'].includes(w));
+        if (filtered[0] && !last_ar) last_ar = filtered[0];
+      }
+    }
+
+    if (line.includes('اسم الاب') || line.includes('اسم الأب') || line.includes('Father')) {
+      const nextLine = lines[i + 1] || '';
+      const targetStr = line + ' ' + nextLine;
+      const arabicMatches = targetStr.match(/[\u0600-\u06FF]+/g);
+      if (arabicMatches && arabicMatches.length > 0) {
+        const filtered = arabicMatches.filter(w => !['اسم', 'الاب', 'الأب', 'Father', 'Name'].includes(w));
+        if (filtered[0] && !father_ar) father_ar = filtered[0];
+      }
+    }
+  }
+
+  return { first_ar, father_ar, last_ar };
+}
+
 function extractPassportData(lines) {
   const line1 = lines[0].padEnd(44, '<');
   const line2 = lines[1].padEnd(44, '<');
@@ -185,13 +234,6 @@ function extractPassportData(lines) {
   }
 
   const { firstName: firstNameEn, fatherName: fatherNameEn, middleNames } = splitGivenNamesSmart(givenEn);
-  logOcrDebug('MRZ name tokens', {
-    rawName: givenEn,
-    firstNameEn,
-    fatherNameEn,
-    middleNames,
-    lastNameEn
-  });
 
   const passportNumber = line2.slice(0, 9).replace(/</g, '').trim();
   const nationality = line2.slice(10, 13).replace(/</g, '').trim();
@@ -221,20 +263,6 @@ function extractPassportData(lines) {
     },
     valid
   };
-}
-
-function fixMrzLine1(line) {
-  let fixed = line.padEnd(44, '<').slice(0, 44);
-  return fixed.slice(0, 2) + fixed.slice(2).replace(/0/g, 'O').replace(/1/g, 'I').replace(/5/g, 'S');
-}
-
-function fixMrzLine2(line) {
-  const chars = line.padEnd(44, '<').slice(0, 44).split('');
-  const digitPositions = [9, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 42, 43];
-  const toDigit = { 'O': '0', 'Q': '0', 'D': '0', 'I': '1', 'L': '1', 'Z': '2', 'S': '5', 'B': '8' };
-  for (const pos of digitPositions) { if (toDigit[chars[pos]]) chars[pos] = toDigit[chars[pos]]; }
-  if (chars[20] === '0') chars[20] = 'M';
-  return chars.join('');
 }
 
 function sanitizeMRZLines(text) {
@@ -276,6 +304,7 @@ router.post('/ocr/passport', authenticateToken, upload.single('image'), async (r
     const orientedImage = await sharp(req.file.buffer, { limitInputPixels: MAX_IMAGE_PIXELS }).rotate().toBuffer();
     const { width, height } = await sharp(orientedImage).metadata();
     
+    // 1. محاولة قراءة شريط الـ MRZ في الأسفل (الأولوية القصوى للأرقام والتواريخ)
     const croppedImagePath = path.join(tempDirectory, 'mrz-cropped.png');
     const top = height > 300 ? Math.floor(height * 0.45) : 0;
     
@@ -288,22 +317,39 @@ router.post('/ocr/passport', authenticateToken, upload.single('image'), async (r
       .png()
       .toFile(croppedImagePath);
 
-    let { data: { text } } = await worker.recognize(croppedImagePath);
-    let lines = sanitizeMRZLines(text);
+    let { data: { text: mrzText } } = await worker.recognize(croppedImagePath);
+    let lines = sanitizeMRZLines(mrzText);
 
+    let fullImageText = '';
+
+    // إذا لمა يوضح شريط الـ MRZ، نلجأ لقراءة الصورة كاملة كاحتياط (Fallback)
     if (lines.length !== 2) {
       const fullImagePath = path.join(tempDirectory, 'mrz-full.png');
       await sharp(orientedImage).resize({ width: 3000 }).grayscale().normalize().png().toFile(fullImagePath);
       const fullResult = await worker.recognize(fullImagePath);
-      lines = sanitizeMRZLines(fullResult.data.text);
+      fullImageText = fullResult.data.text;
+      lines = sanitizeMRZLines(fullImageText);
+    } else {
+      // حتى لو نجح الـ MRZ، نقرأ الصورة الكاملة لاستخراج النصوص العربية المرئية
+      const fullImagePath = path.join(tempDirectory, 'mrz-full.png');
+      await sharp(orientedImage).resize({ width: 2500 }).grayscale().normalize().png().toFile(fullImagePath);
+      const fullResult = await worker.recognize(fullImagePath);
+      fullImageText = fullResult.data.text;
     }
 
     if (lines.length !== 2) {
       return res.status(422).json({ warning: 'لم يتمكن النظام من قراءة شريط الجواز (MRZ). تأكد من وضوح الصورة.' });
     }
 
+    // استخراج البيانات الأساسية من الـ MRZ
     const { data, valid } = extractPassportData(lines);
     if (!data) return res.status(422).json({ warning: 'تعذر تحليل بيانات الجواز.' });
+
+    // 2. استخراج الأسماء العربية مباشرة من حقول الجواز المرئية (Visual Zone)
+    const arabicNames = extractArabicFieldsFromVisualText(fullImageText);
+    if (arabicNames.first_ar) data.first_name_ar = arabicNames.first_ar;
+    if (arabicNames.father_ar) data.father_name_ar = arabicNames.father_ar;
+    if (arabicNames.last_ar) data.last_name_ar = arabicNames.last_ar;
 
     res.json({ data, ...(!valid && { warning: 'تم استخراج البيانات، يرجى مراجعتها.' }) });
   } catch (error) {
