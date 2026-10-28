@@ -164,7 +164,7 @@ function formatMrzDate(value, dateType) {
   return `${year}-${value.slice(2, 4)}-${value.slice(4, 6)}`;
 }
 
-// دالة لاستخراج الأسماء العربية مباشرة من النصوص المرئية في الجواز (Visual Zone)
+// دالة محسنة لاستخراج الأسماء العربية بدقة من النصوص المرئية في الجواز (Visual Zone)
 function extractArabicFieldsFromVisualText(fullText) {
   if (!fullText) return { first_ar: '', father_ar: '', last_ar: '' };
   
@@ -175,37 +175,37 @@ function extractArabicFieldsFromVisualText(fullText) {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    
-    if (line.includes('الاسم') || line.includes('Name')) {
-      // البحث في نفس السطر أو السطر التالي عن الكلمات العربية
-      const nextLine = lines[i + 1] || '';
-      const targetStr = line + ' ' + nextLine;
+    const upperLine = line.toUpperCase();
+
+    // البحث عن اسم الأب
+    if (upperLine.includes('الاب') || upperLine.includes('الأب') || upperLine.includes('FATHER')) {
+      const targetStr = line + ' ' + (lines[i + 1] || '');
       const arabicMatches = targetStr.match(/[\u0600-\u06FF]+/g);
       if (arabicMatches && arabicMatches.length > 0) {
-        // تصفية الكلمات الترويجية
-        const filtered = arabicMatches.filter(w => !['الجمهورية', 'العربية', 'السورية', 'جواز', 'سفر', 'الاسم', 'النسبة'].includes(w));
+        const filtered = arabicMatches.filter(w => !['اسم', 'الاب', 'الأب', 'Father', 'Name', 'الام', 'الأم'].includes(w));
+        if (filtered.length > 0) {
+          father_ar = filtered[filtered.length - 1];
+        }
+      }
+    }
+
+    // البحث عن الاسم الشخصي
+    if ((upperLine.includes('الاسم') || upperLine.includes('NAME')) && !upperLine.includes('الاب') && !upperLine.includes('الأب')) {
+      const targetStr = line + ' ' + (lines[i + 1] || '');
+      const arabicMatches = targetStr.match(/[\u0600-\u06FF]+/g);
+      if (arabicMatches && arabicMatches.length > 0) {
+        const filtered = arabicMatches.filter(w => !['الجمهورية', 'العربية', 'السورية', 'جواز', 'سفر', 'الاسم'].includes(w));
         if (filtered[0] && !first_ar) first_ar = filtered[0];
-        if (filtered[1] && !father_ar) father_ar = filtered[1];
       }
     }
 
-    if (line.includes('النسبة') || line.includes('Surname')) {
-      const nextLine = lines[i + 1] || '';
-      const targetStr = line + ' ' + nextLine;
+    // البحث عن النسبة / العائلة
+    if (upperLine.includes('النسبة') || upperLine.includes('SURNAME')) {
+      const targetStr = line + ' ' + (lines[i + 1] || '');
       const arabicMatches = targetStr.match(/[\u0600-\u06FF]+/g);
       if (arabicMatches && arabicMatches.length > 0) {
-        const filtered = arabicMatches.filter(w => !['النسبة', 'الاب', 'الأب', 'الام', 'الأم'].includes(w));
-        if (filtered[0] && !last_ar) last_ar = filtered[0];
-      }
-    }
-
-    if (line.includes('اسم الاب') || line.includes('اسم الأب') || line.includes('Father')) {
-      const nextLine = lines[i + 1] || '';
-      const targetStr = line + ' ' + nextLine;
-      const arabicMatches = targetStr.match(/[\u0600-\u06FF]+/g);
-      if (arabicMatches && arabicMatches.length > 0) {
-        const filtered = arabicMatches.filter(w => !['اسم', 'الاب', 'الأب', 'Father', 'Name'].includes(w));
-        if (filtered[0] && !father_ar) father_ar = filtered[0];
+        const filtered = arabicMatches.filter(w => !['النسبة', 'Surname'].includes(w));
+        if (filtered[0] && !last_ar) last_ar = filtered.join(' ');
       }
     }
   }
@@ -304,7 +304,7 @@ router.post('/ocr/passport', authenticateToken, upload.single('image'), async (r
     const orientedImage = await sharp(req.file.buffer, { limitInputPixels: MAX_IMAGE_PIXELS }).rotate().toBuffer();
     const { width, height } = await sharp(orientedImage).metadata();
     
-    // 1. محاولة قراءة شريط الـ MRZ في الأسفل (الأولوية القصوى للأرقام والتواريخ)
+    // محاولة قراءة شريط الـ MRZ في الأسفل (الأولوية القصوى للأرقام والتواريخ)
     const croppedImagePath = path.join(tempDirectory, 'mrz-cropped.png');
     const top = height > 300 ? Math.floor(height * 0.45) : 0;
     
@@ -322,7 +322,7 @@ router.post('/ocr/passport', authenticateToken, upload.single('image'), async (r
 
     let fullImageText = '';
 
-    // إذا لمა يوضح شريط الـ MRZ، نلجأ لقراءة الصورة كاملة كاحتياط (Fallback)
+    // إذا لم يوضح شريط الـ MRZ، نلجأ لقراءة الصورة كاملة كاحتياط (Fallback)
     if (lines.length !== 2) {
       const fullImagePath = path.join(tempDirectory, 'mrz-full.png');
       await sharp(orientedImage).resize({ width: 3000 }).grayscale().normalize().png().toFile(fullImagePath);
@@ -345,7 +345,7 @@ router.post('/ocr/passport', authenticateToken, upload.single('image'), async (r
     const { data, valid } = extractPassportData(lines);
     if (!data) return res.status(422).json({ warning: 'تعذر تحليل بيانات الجواز.' });
 
-    // 2. استخراج الأسماء العربية مباشرة من حقول الجواز المرئية (Visual Zone)
+    // استخراج الأسماء العربية مباشرة من حقول الجواز المرئية (Visual Zone)
     const arabicNames = extractArabicFieldsFromVisualText(fullImageText);
     if (arabicNames.first_ar) data.first_name_ar = arabicNames.first_ar;
     if (arabicNames.father_ar) data.father_name_ar = arabicNames.father_ar;
