@@ -100,23 +100,59 @@ function transliterateToAr(enText) {
   return result.join(' ');
 }
 
-function splitGivenNamesSmart(givenNamesStr) {
-  if (!givenNamesStr) return { firstName: '', fatherName: '' };
-  const rawWords = givenNamesStr.trim().split(/\s+/).filter(Boolean);
-  if (rawWords.length <= 1) return { firstName: rawWords[0] || '', fatherName: '' };
-  const grouped = [];
-  let i = 0;
-  while (i < rawWords.length) {
-    const w = rawWords[i].toUpperCase();
-    if (['ABD', 'ABDEL', 'ABDUL', 'ABU', 'AL', 'EL', 'IBN', 'BIN'].includes(w) && rawWords[i + 1]) {
-      grouped.push(`${rawWords[i]} ${rawWords[i + 1]}`);
-      i += 2;
-    } else {
-      grouped.push(rawWords[i]);
-      i += 1;
-    }
+function logOcrDebug(message, payload = {}) {
+  if (process.env.OCR_DEBUG === '1' || process.env.NODE_ENV !== 'production') {
+    console.log(`[OCR_DEBUG] ${message}`, payload);
   }
-  return { firstName: grouped[0] || '', fatherName: grouped.slice(1).join(' ') || '' };
+}
+
+function splitGivenNamesFallback(givenNamesStr) {
+  const raw = (givenNamesStr || '').replace(/</g, ' ').replace(/\s+/g, ' ').trim();
+  if (!raw) return { firstName: '', fatherName: '', middleNames: [] };
+
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { firstName: '', fatherName: '', middleNames: [] };
+  if (tokens.length === 1) return { firstName: tokens[0], fatherName: '', middleNames: [] };
+
+  const compoundPrefixes = new Set(['ABD', 'ABDEL', 'ABDUL', 'ABU', 'AL', 'EL', 'IBN', 'BIN', 'BEN', 'BINT']);
+  let firstName = tokens[0];
+  let fatherName = tokens[1];
+  let middleNames = tokens.slice(2);
+
+  if (compoundPrefixes.has(tokens[1].toUpperCase()) && tokens.length > 2) {
+    fatherName = `${tokens[1]} ${tokens[2]}`;
+    middleNames = tokens.slice(3);
+  }
+
+  return { firstName, fatherName, middleNames };
+}
+
+function splitGivenNamesSmart(givenNamesStr) {
+  const raw = (givenNamesStr || '').replace(/</g, ' ').replace(/\s+/g, ' ').trim();
+  const rawWords = raw ? raw.split(/\s+/).filter(Boolean) : [];
+  logOcrDebug('MRZ raw given names before split', { raw, rawWords });
+
+  if (!rawWords.length) return { firstName: '', fatherName: '', middleNames: [] };
+
+  const standard = splitGivenNamesFallback(raw);
+  if (rawWords.length <= 2 || !standard.fatherName) {
+    return standard;
+  }
+
+  const compoundPrefixes = new Set(['ABD', 'ABDEL', 'ABDUL', 'ABU', 'AL', 'EL', 'IBN', 'BIN', 'BEN', 'BINT']);
+  if (compoundPrefixes.has(rawWords[1].toUpperCase()) && rawWords.length > 2) {
+    return {
+      firstName: rawWords[0],
+      fatherName: `${rawWords[1]} ${rawWords[2]}`,
+      middleNames: rawWords.slice(3)
+    };
+  }
+
+  return {
+    firstName: rawWords[0],
+    fatherName: rawWords[1],
+    middleNames: rawWords.slice(2)
+  };
 }
 
 function formatMrzDate(value, dateType) {
@@ -148,7 +184,14 @@ function extractPassportData(lines) {
     givenEn = spaceParts.slice(1).join(' ');
   }
 
-  const { firstName: firstNameEn, fatherName: fatherNameEn } = splitGivenNamesSmart(givenEn);
+  const { firstName: firstNameEn, fatherName: fatherNameEn, middleNames } = splitGivenNamesSmart(givenEn);
+  logOcrDebug('MRZ name tokens', {
+    rawName: givenEn,
+    firstNameEn,
+    fatherNameEn,
+    middleNames,
+    lastNameEn
+  });
 
   const passportNumber = line2.slice(0, 9).replace(/</g, '').trim();
   const nationality = line2.slice(10, 13).replace(/</g, '').trim();

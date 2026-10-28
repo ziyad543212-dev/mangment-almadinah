@@ -3,6 +3,31 @@ const router = express.Router();
 const { authenticateToken } = require('../auth');
 const { query, queryGet, queryRun } = require('./helpers');
 
+const pilgrimNameFields = [
+  'first_name_ar',
+  'father_name_ar',
+  'last_name_ar',
+  'first_name_en',
+  'father_name_en',
+  'last_name_en'
+];
+
+function normalizeNameFields(body) {
+  if (pilgrimNameFields.some((field) => body[field] != null && typeof body[field] !== 'string')) {
+    return { error: 'بيانات الأسماء غير صالحة' };
+  }
+
+  const names = Object.fromEntries(
+    pilgrimNameFields.map((field) => [field, typeof body[field] === 'string' ? body[field].trim() || null : null])
+  );
+
+  if (!names.first_name_ar) {
+    return { error: 'الاسم الأول بالعربية مطلوب' };
+  }
+
+  return { names };
+}
+
 router.get('/trips/:tripId/pilgrims', authenticateToken, async (req, res) => {
   try {
     const { tripId } = req.params;
@@ -100,16 +125,21 @@ router.post('/pilgrims', authenticateToken, async (req, res) => {
       notes
     } = req.body;
 
+    const nameFields = normalizeNameFields(req.body);
+    if (nameFields.error) {
+      return res.status(400).json({ error: nameFields.error });
+    }
+
     const tripId = Number(trip_id);
     const normalizeText = (value) => (typeof value === 'string' && value.trim() ? value.trim() : null);
-
-    const fNameAr = normalizeText(first_name_ar);
-    const fatNameAr = normalizeText(father_name_ar);
-    const lNameAr = normalizeText(last_name_ar);
-
-    const fNameEn = normalizeText(first_name_en);
-    const fatNameEn = normalizeText(father_name_en);
-    const lNameEn = normalizeText(last_name_en);
+    const {
+      first_name_ar: fNameAr,
+      father_name_ar: fatNameAr,
+      last_name_ar: lNameAr,
+      first_name_en: fNameEn,
+      father_name_en: fatNameEn,
+      last_name_en: lNameEn
+    } = nameFields.names;
 
     const normNationality = normalizeText(nationality);
     const normPassport = normalizeText(passport_number);
@@ -160,6 +190,11 @@ router.put('/pilgrims/:id', authenticateToken, async (req, res) => {
       date_of_birth, gender, visa_number, visa_document_path, notes 
     } = req.body;
 
+    const nameFields = normalizeNameFields(req.body);
+    if (nameFields.error) {
+      return res.status(400).json({ error: nameFields.error });
+    }
+
     const normalizeText = (value) => (typeof value === 'string' && value.trim() ? value.trim() : null);
     const normalizedNationality = normalizeText(nationality);
     const normalizedPassport = normalizeText(passport_number);
@@ -176,8 +211,8 @@ router.put('/pilgrims/:id', authenticateToken, async (req, res) => {
         visa_document_path = ?, notes = ?, updated_at = CURRENT_TIMESTAMP 
       WHERE id = ?`,
       [
-        normalizeText(first_name_ar), normalizeText(father_name_ar), normalizeText(last_name_ar),
-        normalizeText(first_name_en), normalizeText(father_name_en), normalizeText(last_name_en),
+        nameFields.names.first_name_ar, nameFields.names.father_name_ar, nameFields.names.last_name_ar,
+        nameFields.names.first_name_en, nameFields.names.father_name_en, nameFields.names.last_name_en,
         normalizedNationality, normalizedPassport,
         normalizeText(passport_expiry_date), normalizeText(date_of_birth),
         normalizeText(gender), normalizeText(visa_number),
