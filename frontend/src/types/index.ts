@@ -12,6 +12,9 @@ export interface Trip {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  vehicle_number?: string;
+  driver_one_name?: string;
+  driver_two_name?: string;
   pilgrim_count?: number;
   total_received?: number;
   total_outstanding?: number;
@@ -22,6 +25,8 @@ export interface Trip {
 export interface Pilgrim {
   id: number;
   trip_id: number;
+  name_ar?: string;
+  name_en?: string;
   first_name_ar?: string;
   father_name_ar?: string;
   last_name_ar?: string;

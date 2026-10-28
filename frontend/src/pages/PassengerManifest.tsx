@@ -32,7 +32,6 @@ function PassengerManifest() {
   const [trip, setTrip] = useState<Trip | null>(null);
   const [pilgrims, setPilgrims] = useState<Pilgrim[]>([]);
   const [loading, setLoading] = useState(true);
-  const [generatingPdf, setGeneratingPdf] = useState(false);
 
   useEffect(() => {
     document.body.classList.add('print-manifest');
@@ -59,28 +58,8 @@ function PassengerManifest() {
     }
   };
 
-  const handleExportPdf = async () => {
-    setGeneratingPdf(true);
-    try {
-      const response = await api.post(`/api/trips/${tripId}/manifest/pdf`, {}, {
-        responseType: 'blob'
-      });
-
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `manifest_${trip?.name.replace(/\s+/g, '_')}.pdf`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-
-      alert('تم تصدير كشف الركاب بنجاح');
-    } catch (error) {
-      alert('حدث خطأ في تصدير PDF');
-    } finally {
-      setGeneratingPdf(false);
-    }
+  const handleExportPdf = () => {
+    window.print();
   };
 
   const getFullNameAr = (pilgrim: Pilgrim) => {
@@ -141,19 +120,11 @@ function PassengerManifest() {
           <button
             onClick={handleExportPdf}
             className="btn btn-secondary"
-            disabled={generatingPdf}
           >
-            {generatingPdf ? (
-              <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span className="spinner" style={{ width: '16px', height: '16px' }}></span>
-                جاري التصدير...
-              </span>
-            ) : (
-              <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span>📄</span>
-                <span>تنزيل PDF</span>
-              </span>
-            )}
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span>📄</span>
+              <span>حفظ PDF</span>
+            </span>
           </button>
         </div>
       </div>
@@ -229,5 +200,4 @@ function PassengerManifest() {
   );
 }
 
-import './PassengerManifest'; // keeping type check clean
 export default PassengerManifest;

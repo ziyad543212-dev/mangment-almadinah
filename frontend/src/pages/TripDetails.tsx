@@ -3,6 +3,13 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import api from '../services/api';
 import type { Pilgrim, Trip } from '../types';
 
+// توسيع واجهة الرحلة محلياً لتشمل بيانات المركبة والسائقين ومنع أخطاء TypeScript
+type TripWithTransport = Trip & {
+  vehicle_number?: string;
+  driver_one_name?: string;
+  driver_two_name?: string;
+};
+
 const NATIONALITY_MAP: Record<string, string> = {
   SYR: 'سوريا', SAU: 'السعودية', EGY: 'مصر', JOR: 'الأردن',
   KWT: 'الكويت', ARE: 'الإمارات', UAE: 'الإمارات', YEM: 'اليمن',
@@ -43,7 +50,7 @@ function TripDetails() {
 
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [trip, setTrip] = useState<Trip | null>(null);
+  const [trip, setTrip] = useState<TripWithTransport | null>(null);
   const [loading, setLoading] = useState(true);
   
   // نوافذ المعتمرين
@@ -73,14 +80,15 @@ function TripDetails() {
     setLoading(true);
     try {
       const response = await api.get(`/api/trips/${id}`);
-      setTrip(response.data);
+      const data: TripWithTransport = response.data;
+      setTrip(data);
       setTripFormData({
-        name: response.data.name || '',
-        trip_date: response.data.trip_date?.slice(0, 10) || '',
-        vehicle_number: response.data.vehicle_number || '',
-        driver_one_name: response.data.driver_one_name || '',
-        driver_two_name: response.data.driver_two_name || '',
-        trip_cost_usd: response.data.trip_cost_usd?.toString() || '',
+        name: data.name || '',
+        trip_date: data.trip_date?.slice(0, 10) || '',
+        vehicle_number: data.vehicle_number || '',
+        driver_one_name: data.driver_one_name || '',
+        driver_two_name: data.driver_two_name || '',
+        trip_cost_usd: data.trip_cost_usd?.toString() || '',
       });
     } catch (error) {
       alert('حدث خطأ في تحميل البيانات');
@@ -303,6 +311,11 @@ function TripDetails() {
                       <Link to={`/pilgrims/${pilgrim.id}`} style={{ color: '#D4AF37', textDecoration: 'none', fontWeight: '600' }}>
                         {[pilgrim.first_name_ar, pilgrim.father_name_ar, pilgrim.last_name_ar].filter(Boolean).join(' ') || '-'}
                       </Link>
+                      {[pilgrim.first_name_en, pilgrim.father_name_en, pilgrim.last_name_en].some(Boolean) && (
+                        <div style={{ color: '#666', fontSize: '0.875rem' }}>
+                          {[pilgrim.first_name_en, pilgrim.father_name_en, pilgrim.last_name_en].filter(Boolean).join(' ')}
+                        </div>
+                      )}
                     </td>
                     <td>{pilgrim.nationality}</td>
                     <td>{pilgrim.passport_number}</td>
