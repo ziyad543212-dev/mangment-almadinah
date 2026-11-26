@@ -21,6 +21,7 @@ fs.mkdirSync(uploadDir, { recursive: true });
 const allowedOrigins = new Set([
   'http://localhost:5173',
   'http://localhost:3000',
+  'https://almadinah-management.bentcamel32.chatgpt.site',
   ...(process.env.ALLOWED_ORIGINS || '')
     .split(',')
     .map((origin) => origin.trim())
@@ -38,7 +39,6 @@ app.use(cors({
         isVercelOrigin = false;
       }
     }
-
     callback(null, !origin || allowedOrigins.has(origin) || isVercelOrigin);
   }
 }));
