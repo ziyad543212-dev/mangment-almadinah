@@ -4,17 +4,19 @@ import { mobileShell, isOffline, isPreview, setOffline, offlineResponse, remembe
 const isElectronFileOrigin = window.location.protocol === 'file:';
 const isLocalWebOrigin = ['localhost', '127.0.0.1'].includes(window.location.hostname);
 const localApiBaseUrl = 'http://localhost:3001/api';
+const hostedApiBaseUrl = 'https://mangment-almadinah-2.onrender.com/api';
 const desktopApiBaseUrl = (window as unknown as {
   mangDesktop?: { apiBaseUrl?: string };
 }).mangDesktop?.apiBaseUrl;
+const configuredApiBaseUrl = (import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '');
 
 const api = axios.create({
-  baseURL: window.__mangMobile?.apiBaseUrl || desktopApiBaseUrl ||
+  baseURL: window.__mangMobile?.apiBaseUrl || desktopApiBaseUrl || configuredApiBaseUrl ||
     (isElectronFileOrigin
       ? 'http://127.0.0.1:3001/api'
       : isLocalWebOrigin
         ? localApiBaseUrl
-        : ''),
+        : hostedApiBaseUrl),
   headers: {
     'Content-Type': 'application/json',
   },
