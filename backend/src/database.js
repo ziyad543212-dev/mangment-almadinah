@@ -324,8 +324,8 @@ async function seedInitialAdmin(client) {
   const username = process.env.INITIAL_ADMIN_USERNAME || 'admin';
   const password = process.env.INITIAL_ADMIN_PASSWORD;
   if (!password) return;
-  if (password.length < 12) {
-    throw new Error('INITIAL_ADMIN_PASSWORD must contain at least 12 characters');
+  if (password.length < 8) {
+    throw new Error('INITIAL_ADMIN_PASSWORD must contain at least 8 characters');
   }
 
   const passwordHash = await bcrypt.hash(password, 12);

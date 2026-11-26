@@ -24,8 +24,8 @@ function Setup() {
       return;
     }
 
-    if (formData.password.length < 12 || formData.password.length > 128) {
-      setError('كلمة المرور يجب أن تكون بين 12 و128 حرفاً');
+    if (formData.password.length < 8 || formData.password.length > 128) {
+      setError('كلمة المرور يجب أن تكون بين 8 و128 حرفاً');
       setLoading(false);
       return;
     }
@@ -81,7 +81,7 @@ function Setup() {
               onChange={(e) => setFormData({ ...formData, password: e.target.value })}
               required
               disabled={loading}
-              minLength={12}
+              minLength={8}
               maxLength={128}
             />
           </div>
@@ -95,7 +95,7 @@ function Setup() {
               onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
               required
               disabled={loading}
-              minLength={12}
+              minLength={8}
               maxLength={128}
             />
           </div>

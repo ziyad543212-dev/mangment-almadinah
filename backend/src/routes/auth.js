@@ -87,8 +87,8 @@ router.post('/setup-admin', async (req, res) => {
         !username.trim() || username.trim().length > 80 || password.length > 128) {
       return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
     }
-    if (password.length < 12) {
-      return res.status(400).json({ error: 'كلمة المرور يجب ألا تقل عن 12 حرفاً' });
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'كلمة المرور يجب ألا تقل عن 8 أحرف' });
     }
 
     const passwordHash = hashPassword(password);
@@ -135,8 +135,8 @@ router.get('/employees', authenticateToken, requireAdmin, async (_req, res) => {
 router.post('/employees', authenticateToken, requireAdmin, async (req, res) => {
   const { username, password, confirmPassword } = req.body;
   if (typeof username !== 'string' || !username.trim() || username.trim().length > 80 ||
-      typeof password !== 'string' || password.length < 12 || password.length > 128) {
-    return res.status(400).json({ error: 'أدخل اسم مستخدم وكلمة مرور بين 12 و128 حرفاً' });
+      typeof password !== 'string' || password.length < 8 || password.length > 128) {
+    return res.status(400).json({ error: 'أدخل اسم مستخدم وكلمة مرور بين 8 و128 حرفاً' });
   }
   if (password !== confirmPassword) {
     return res.status(400).json({ error: 'تأكيد كلمة المرور غير مطابق' });
@@ -155,6 +155,36 @@ router.post('/employees', authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
+router.get('/admins', authenticateToken, requireAdmin, async (_req, res) => {
+  try {
+    const admins = await query("SELECT id, username, role, created_at FROM users WHERE role = 'admin' ORDER BY created_at DESC, id DESC");
+    res.json({ admins });
+  } catch (error) {
+    console.error('Admin list failed:', error.code || error.name);
+    res.status(500).json({ error: 'تعذر تحميل حسابات المدراء' });
+  }
+});
+
+router.post('/admins', authenticateToken, requireAdmin, async (req, res) => {
+  const { username, password, confirmPassword } = req.body;
+  if (typeof username !== 'string' || !username.trim() || username.trim().length > 80 ||
+      typeof password !== 'string' || password.length < 8 || password.length > 128) {
+    return res.status(400).json({ error: 'أدخل اسم مستخدم وكلمة مرور بين 8 و128 حرفاً' });
+  }
+  if (password !== confirmPassword) return res.status(400).json({ error: 'تأكيد كلمة المرور غير مطابق' });
+  try {
+    const result = await queryRun(
+      'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?) RETURNING id',
+      [username.trim(), hashPassword(password), 'admin']
+    );
+    res.status(201).json({ user: { id: result.lastID, username: username.trim(), role: 'admin' } });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'اسم المستخدم مستخدم مسبقاً' });
+    console.error('Admin creation failed:', error.code || error.name);
+    res.status(500).json({ error: 'تعذر إنشاء حساب المدير' });
+  }
+});
+
 router.post('/change-password', authenticateToken, async (req, res) => {
   try {
     const { currentPassword, newPassword, confirmPassword } = req.body;
@@ -167,8 +197,8 @@ router.post('/change-password', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'كلمة المرور الجديدة غير متطابقة مع التأكيد' });
     }
 
-    if (newPassword.length < 12 || newPassword.length > 128) {
-      return res.status(400).json({ error: 'كلمة المرور الجديدة يجب أن تكون بين 12 و128 حرفاً' });
+    if (newPassword.length < 8 || newPassword.length > 128) {
+      return res.status(400).json({ error: 'كلمة المرور الجديدة يجب أن تكون بين 8 و128 حرفاً' });
     }
 
     const user = await queryGet('SELECT * FROM users WHERE id = ?', [req.user.id]);

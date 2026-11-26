@@ -159,7 +159,7 @@ function Settings() {
               onChange={(e) => setPasswordData({ ...passwordData, newPassword: e.target.value })}
               required
               disabled={loading}
-              minLength={12}
+              minLength={8}
               maxLength={128}
             />
           </div>
@@ -172,7 +172,7 @@ function Settings() {
               onChange={(e) => setPasswordData({ ...passwordData, confirmPassword: e.target.value })}
               required
               disabled={loading}
-              minLength={12}
+              minLength={8}
               maxLength={128}
             />
           </div>
