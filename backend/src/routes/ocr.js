@@ -2,11 +2,28 @@ const express = require('express');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const dotenv = require('dotenv');
+
+dotenv.config({ path: path.join(__dirname, '..', '..', '.env.local') });
+dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
+
 const multer = require('multer');
 const sharp = require('sharp');
-const mrz = require('mrz');
 const { createWorker, OEM, PSM } = require('tesseract.js');
-const { authenticateToken } = require('../auth');
+const pythonOcrService = require('../services/ocr/python-ocr-service');
+const { getLocalOcrStatus, waitForLocalOcrService } = require('../services/ocr/service-lifecycle');
+const { orientFallbackPassport } = require('../services/ocr/fallback-orientation');
+const cloudOcrService = require('../services/ocr/gemini-passport-service');
+const { normalizeTesseractLines, recognizeSerialized } = require('../services/ocr/tesseract-utils');
+const { rasterizePassportPdf } = require('../services/ocr/pdf-input');
+const {
+  buildOcrContract,
+  emptyPassportData,
+  hasPassportIdentity,
+  mergePassportSources,
+  parseMrzText
+} = require('../services/ocr/passport-extraction');
+const { authenticateToken, requireStaff } = require('../auth');
 
 const router = express.Router();
 const upload = multer({
@@ -14,352 +31,784 @@ const upload = multer({
   limits: { fileSize: 15 * 1024 * 1024, files: 1 }
 });
 
-const OCR_CACHE_DIR = process.env.TESSERACT_CACHE_DIR
-  || path.join(os.tmpdir(), 'tesseract-cache');
-const MRZ_WHITELIST = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<';
+const OCR_CACHE_DIR = process.env.TESSERACT_CACHE_DIR || path.join(os.tmpdir(), 'tesseract-cache');
+const BEST_MODEL_DIR = process.env.TESSERACT_LANG_PATH || path.join(__dirname, '..', 'ocr-service', 'models', 'tessdata_best');
 const MAX_IMAGE_PIXELS = 40_000_000;
+const MAX_ANALYSIS_WIDTH = 2600;
+const MIN_IMAGE_DIMENSION = 120;
+const MRZ_ROI_TOP_RATIOS = [0.70, 0.55];
+const MRZ_WHITELIST = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<';
+const PADDLE_OCR_TIMEOUT_MS = Number(process.env.LOCAL_PADDLE_OCR_TIMEOUT_MS) || 90_000;
+const OCR_MAX_CONCURRENT = Math.max(1, Number(process.env.OCR_MAX_CONCURRENT) || 1);
+const OCR_RATE_LIMIT = Math.max(1, Number(process.env.OCR_RATE_LIMIT_PER_MINUTE) || 12);
+const BLUR_EDGE_THRESHOLD = Number(process.env.OCR_BLUR_EDGE_THRESHOLD) || 6;
 
-let workerPromise;
+let mrzWorkerPromise;
+let arabicWorkerPromise;
+let englishWorkerPromise;
+let ocrInFlight = 0;
+const ocrRateBuckets = new Map();
+let paddleHealthCache = { checkedAt: 0, status: 'unknown' };
 
-function getWorker() {
-  if (!workerPromise) {
-    workerPromise = (async () => {
-      await fs.promises.mkdir(OCR_CACHE_DIR, { recursive: true });
-      const worker = await createWorker('eng', OEM.LSTM_ONLY, {
-        cachePath: OCR_CACHE_DIR
-      });
-      try {
-        await worker.setParameters({
-          tessedit_char_whitelist: MRZ_WHITELIST,
-          tessedit_pageseg_mode: PSM.SINGLE_BLOCK
-        });
-        return worker;
-      } catch (error) {
-        await worker.terminate();
-        throw error;
-      }
-    })().catch((error) => {
-      workerPromise = undefined;
+function getWorker(language, configure) {
+  return (async () => {
+    await fs.promises.mkdir(OCR_CACHE_DIR, { recursive: true });
+    const bestModel = fs.existsSync(path.join(BEST_MODEL_DIR, `${language}.traineddata`));
+    const worker = await createWorker(language, OEM.LSTM_ONLY, {
+      cachePath: bestModel ? path.join(OCR_CACHE_DIR, 'best') : OCR_CACHE_DIR,
+      errorHandler: () => {}, // Recognition promises reject; do not crash the API.
+      ...(bestModel && { langPath: BEST_MODEL_DIR, gzip: false,
+        workerPath: require.resolve('../services/ocr/tesseract-best-worker.cjs') })
+    });
+    if (configure) await configure(worker);
+    return worker;
+  })();
+}
+
+function getMrzWorker() {
+  if (!mrzWorkerPromise) {
+    mrzWorkerPromise = getWorker('eng', (worker) => worker.setParameters({
+      tessedit_char_whitelist: MRZ_WHITELIST,
+      tessedit_pageseg_mode: PSM.SINGLE_BLOCK
+    })).catch((error) => {
+      mrzWorkerPromise = undefined;
       throw error;
     });
   }
-  return workerPromise;
+  return mrzWorkerPromise;
 }
 
-const ARABIC_NAMES_DICT = {
-  'AHMAD': 'أحمد', 'AHMED': 'أحمد', 'MOHAMMAD': 'محمد', 'MOHAMMED': 'محمد',
-  'MUHAMMAD': 'محمد', 'MOHAMAD': 'محمد', 'MHD': 'محمد', 'ALI': 'علي',
-  'OMAR': 'عمر', 'KHALED': 'خالد', 'KHALID': 'خالد', 'IBRAHIM': 'إبراهيم',
-  'YOUSEF': 'يوسف', 'YOUSIF': 'يوسف', 'YUSUF': 'يوسف', 'HASSAN': 'حسن',
-  'HUSSEIN': 'حسين', 'MAHMOUD': 'محمود', 'MUSTAFA': 'مصطفى', 'SALEH': 'صالح',
-  'ABDULLAH': 'عبد الله', 'ABDALLAH': 'عبد الله', 'ABDULRAHMAN': 'عبد الرحمن',
-  'MAJED': 'ماجد', 'SAMI': 'سامي', 'RAMI': 'رامي', 'TAREK': 'طارق', 'ZIAD': 'زياد'
-};
+function getArabicWorker() {
+  if (!arabicWorkerPromise) {
+    arabicWorkerPromise = getWorker('ara', (worker) =>
+      worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO })
+    ).catch((error) => {
+      arabicWorkerPromise = undefined;
+      throw error;
+    });
+  }
+  return arabicWorkerPromise;
+}
 
-function phoneticWordToAr(word) {
-  if (!word) return '';
-  let w = word.toUpperCase().trim();
-  if (ARABIC_NAMES_DICT[w]) return ARABIC_NAMES_DICT[w];
-  let prefix = '';
-  if (w.startsWith('AL') && w.length > 3) { prefix = 'ال'; w = w.slice(2); }
-  else if (w.startsWith('EL') && w.length > 3) { prefix = 'ال'; w = w.slice(2); }
-  if (ARABIC_NAMES_DICT[w]) return prefix + ARABIC_NAMES_DICT[w];
+function getEnglishWorker() {
+  if (!englishWorkerPromise) {
+    englishWorkerPromise = getWorker('eng', (worker) =>
+      worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO })
+    ).catch((error) => {
+      englishWorkerPromise = undefined;
+      throw error;
+    });
+  }
+  return englishWorkerPromise;
+}
 
-  let res = w.replace(/KH/g, 'خ').replace(/GH/g, 'غ').replace(/SH/g, 'ش').replace(/TH/g, 'ث').replace(/DH/g, 'ذ').replace(/PH/g, 'ف').replace(/AA/g, 'ا').replace(/EE/g, 'ي').replace(/OO/g, 'و');
-  res = res.replace(/^A/, 'أ').replace(/^I/, 'إ').replace(/^E/, 'إ').replace(/^U/, 'أ');
-  res = res.replace(/AH$/, 'ة').replace(/EH$/, 'ة');
-
-  const charMap = {
-    'A': 'ا', 'B': 'ب', 'C': 'ك', 'D': 'د', 'E': 'ي', 'F': 'ف', 'G': 'ج',
-    'H': 'ه', 'I': 'ي', 'J': 'ج', 'K': 'ك', 'L': 'ل', 'M': 'م', 'N': 'ن',
-    'O': 'و', 'P': 'ب', 'Q': 'ق', 'R': 'ر', 'S': 'س', 'T': 'ت', 'U': 'و',
-    'V': 'ف', 'W': 'و', 'X': 'كس', 'Y': 'ي', 'Z': 'ز'
+async function runLocalRead(imageBuffer, width, height, arabicCropBounds, initialEnglishResult) {
+  const [arabicResult, englishResult] = await Promise.allSettled([
+    getArabicWorker().then((worker) => recognizeSerialized(worker, imageBuffer, { tessedit_pageseg_mode: PSM.AUTO })),
+    initialEnglishResult ? Promise.resolve(initialEnglishResult) :
+      getEnglishWorker().then((worker) => recognizeSerialized(worker, imageBuffer, { tessedit_pageseg_mode: PSM.AUTO }))
+  ]);
+  const lines = [
+    ...normalizeTesseractLines(arabicResult.value, width, height, 'tesseract-arabic'),
+    ...normalizeTesseractLines(englishResult.value, width, height, 'tesseract-english')
+  ];
+  const preliminary = mergePassportSources({ lines }, null, null, 'tesseract');
+  const missingArabicNames = ['first_name_ar', 'father_name_ar', 'last_name_ar'].some((field) => !preliminary.data[field]);
+  if (missingArabicNames) {
+    try {
+      const worker = await getArabicWorker();
+      const sparseResult = await recognizeSerialized(worker, imageBuffer, { tessedit_pageseg_mode: PSM.SPARSE_TEXT });
+      lines.push(...normalizeTesseractLines(sparseResult, width, height, 'tesseract-arabic-sparse'));
+    } catch { /* Keep the initial read if the optional retry fails. */ }
+    arabicCropBounds ||= findArabicNameRegion(lines, width, height);
+  }
+  let cropLines = [];
+  const localizedCrop = arabicCropBounds && (!missingArabicNames || arabicCropBounds.width <= width * 0.65);
+  const cropRegions = localizedCrop ? [arabicCropBounds] : missingArabicNames && width >= 600 ? [
+    { left: 0, top: 0, width: Math.floor(width / 2), height: Math.ceil(height * 0.8) },
+    { left: Math.floor(width / 2), top: 0, width: width - Math.floor(width / 2), height: Math.ceil(height * 0.8) }
+  ] : [];
+  for (const [index, cropBounds] of cropRegions.entries()) {
+    try {
+      // Separate columns prevent Latin text and the portrait from merging into
+      // Arabic field rows. Values still require their own visible field label.
+      const crop = await sharp(imageBuffer).extract(cropBounds)
+        .resize({ width: 1200, withoutEnlargement: false }).normalize().png().toBuffer();
+      const metadata = await sharp(crop).metadata();
+      const worker = await getArabicWorker();
+      const result = await recognizeSerialized(worker, crop, { tessedit_pageseg_mode: PSM.SINGLE_BLOCK });
+      cropLines.push(...mapCropLines(normalizeTesseractLines(result, metadata.width, metadata.height,
+        `tesseract-arabic-names-${index}`), cropBounds, width, height));
+    } catch { /* Other independent reads remain usable. */ }
+  }
+  return {
+    lines: [
+      ...lines,
+      ...cropLines
+    ]
   };
-  let finalAr = '';
-  for (const ch of res) { finalAr += charMap[ch] !== undefined ? charMap[ch] : ch; }
-  return prefix + finalAr.replace(/اا+/g, 'ا');
 }
 
-function transliterateToAr(enText) {
-  if (!enText) return '';
-  const clean = enText.toUpperCase().trim().replace(/\s+/g, ' ');
-  const words = clean.split(' ');
-  const result = [];
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i];
-    if ((w === 'ABD' || w === 'ABDEL' || w === 'ABDUL') && words[i + 1]) {
-      result.push('عبد');
-    } else if ((w === 'AL' || w === 'EL') && words[i + 1]) {
-      const nextTranslated = phoneticWordToAr(words[i + 1]);
-      result.push(nextTranslated.startsWith('ال') ? nextTranslated : 'ال' + nextTranslated);
-      i++;
-    } else {
-      result.push(phoneticWordToAr(w));
+async function runMrzRead(imageBuffer, width, height) {
+  const worker = await getMrzWorker();
+  const parsedAttempts = [];
+  let candidateLines = [];
+  let diagnostics = null;
+  let lineLengths = [];
+  let nameStructureValid = false;
+
+  for (const topRatio of MRZ_ROI_TOP_RATIOS) {
+    const top = Math.floor(height * topRatio);
+    const crop = await sharp(imageBuffer)
+      .extract({ left: 0, top, width, height: height - top })
+      .resize({ width: 2800, withoutEnlargement: false })
+      .grayscale()
+      .normalize()
+      .sharpen({ sigma: 1.4 })
+      .png()
+      .toBuffer();
+    const raw = await recognizeSerialized(worker, crop, {}, { text: true });
+    const parsed = parseMrzText(raw?.data?.text);
+    if (!parsed.lines.length) continue;
+    candidateLines = parsed.lines;
+    lineLengths = parsed.lines.map((line) => line.length);
+    diagnostics = parsed.diagnostics;
+    nameStructureValid ||= Boolean(parsed.diagnostics?.valid);
+    if (parsed.data) {
+      parsedAttempts.push({ ...parsed.data, __repaired: parsed.repaired, __namesValid: !parsed.partial });
     }
   }
-  return result.join(' ');
-}
 
-function logOcrDebug(message, payload = {}) {
-  if (process.env.OCR_DEBUG === '1' || process.env.NODE_ENV !== 'production') {
-    console.log(`[OCR_DEBUG] ${message}`, payload);
-  }
-}
-
-function splitGivenNamesFallback(givenNamesStr) {
-  const raw = (givenNamesStr || '').replace(/</g, ' ').replace(/\s+/g, ' ').trim();
-  if (!raw) return { firstName: '', fatherName: '', middleNames: [] };
-
-  const tokens = raw.split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return { firstName: '', fatherName: '', middleNames: [] };
-  if (tokens.length === 1) return { firstName: tokens[0], fatherName: '', middleNames: [] };
-
-  const compoundPrefixes = new Set(['ABD', 'ABDEL', 'ABDUL', 'ABU', 'AL', 'EL', 'IBN', 'BIN', 'BEN', 'BINT']);
-  let firstName = tokens[0];
-  let fatherName = tokens[1];
-  let middleNames = tokens.slice(2);
-
-  if (compoundPrefixes.has(tokens[1].toUpperCase()) && tokens.length > 2) {
-    fatherName = `${tokens[1]} ${tokens[2]}`;
-    middleNames = tokens.slice(3);
-  }
-
-  return { firstName, fatherName, middleNames };
-}
-
-function splitGivenNamesSmart(givenNamesStr) {
-  const raw = (givenNamesStr || '').replace(/</g, ' ').replace(/\s+/g, ' ').trim();
-  const rawWords = raw ? raw.split(/\s+/).filter(Boolean) : [];
-  logOcrDebug('MRZ raw given names before split', { raw, rawWords });
-
-  if (!rawWords.length) return { firstName: '', fatherName: '', middleNames: [] };
-
-  const standard = splitGivenNamesFallback(raw);
-  if (rawWords.length <= 2 || !standard.fatherName) {
-    return standard;
-  }
-
-  const compoundPrefixes = new Set(['ABD', 'ABDEL', 'ABDUL', 'ABU', 'AL', 'EL', 'IBN', 'BIN', 'BEN', 'BINT']);
-  if (compoundPrefixes.has(rawWords[1].toUpperCase()) && rawWords.length > 2) {
-    return {
-      firstName: rawWords[0],
-      fatherName: `${rawWords[1]} ${rawWords[2]}`,
-      middleNames: rawWords.slice(3)
-    };
-  }
-
+  const complete = parsedAttempts.filter((entry) => entry.__namesValid);
+  const selected = complete.length ? complete : parsedAttempts;
+  const distinct = new Map(selected.map((entry) => {
+    const { __repaired, __namesValid, ...rest } = entry;
+    return [JSON.stringify(rest), entry];
+  }));
+  const firstAttempt = selected[0] || null;
+  const data = firstAttempt ? (({ __repaired, __namesValid, ...rest }) => rest)(firstAttempt) : null;
   return {
-    firstName: rawWords[0],
-    fatherName: rawWords[1],
-    middleNames: rawWords.slice(2)
+    data,
+    valid: parsedAttempts.length > 0,
+    attempts: selected.length,
+    consistent: distinct.size <= 1,
+    repaired: parsedAttempts.some((entry) => entry.__repaired),
+    candidateLines,
+    diagnostics,
+    lineLengths,
+    nameStructureValid
   };
 }
 
-function formatMrzDate(value, dateType) {
-  if (!/^\d{6}$/.test(value || '')) return null;
-  const currentYear = new Date().getFullYear();
-  const currentTwoDigitYear = currentYear % 100;
-  const twoDigitYear = Number(value.slice(0, 2));
-  let year = dateType === 'birth' ? (twoDigitYear > currentTwoDigitYear ? 1900 + twoDigitYear : 2000 + twoDigitYear) : Math.floor(currentYear / 100) * 100 + twoDigitYear;
-  return `${year}-${value.slice(2, 4)}-${value.slice(4, 6)}`;
+function extractMrzFromReadResult(readResult) {
+  const groups = new Map();
+  for (const line of readResult?.lines || []) {
+    const key = line.passId || 'default';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(line.text);
+  }
+  const attempts = [...groups.values()].map((lines) => parseMrzText(lines.join('\n'))).filter((entry) => entry.data);
+  const complete = attempts.filter((entry) => !entry.partial);
+  const selected = complete.length ? complete : attempts;
+  const distinct = new Set(selected.map((entry) => JSON.stringify(entry.data)));
+  return { data: selected[0]?.data || null, partial: Boolean(selected[0]?.partial), consistent: distinct.size <= 1, attempts: selected.length,
+    repaired: attempts.some((entry) => entry.repaired) };
 }
 
-// دالة محسنة لاستخراج الأسماء العربية بدقة من النصوص المرئية في الجواز (Visual Zone)
-function extractArabicFieldsFromVisualText(fullText) {
-  if (!fullText) return { first_ar: '', father_ar: '', last_ar: '' };
-  
-  const lines = fullText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  let first_ar = '';
-  let father_ar = '';
-  let last_ar = '';
+function findNameRegion(lines, imageWidth, imageHeight) {
+  const labelPattern = /(?:الاسم|اسم\s*(?:الأب|الاب)|الشهرة|النسبة|الكنية|FIRST\s*NAME|GIVEN\s*NAME|FATHER(?:'S)?\s*NAME|SURNAME|FAMILY\s*NAME|LAST\s*NAME|^NAME\b)/iu;
+  const anchors = lines.filter((line) => line.bounds &&
+    labelPattern.test(line.text || ''));
+  if (!anchors.length) return null;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const upperLine = line.toUpperCase();
+  const minTop = Math.min(...anchors.map((line) => line.bounds.top));
+  const maxBottom = Math.max(...anchors.map((line) =>
+    line.bounds.top + line.bounds.height
+  ));
+  const maxLineHeight = Math.max(...anchors.map((line) => line.bounds.height));
+  const padding = Math.max(0.025, Math.min(0.06, maxLineHeight * 1.25));
+  let top = Math.max(0, Math.floor((minTop - padding) * imageHeight));
+  let bottom = Math.min(imageHeight, Math.ceil((maxBottom + padding) * imageHeight));
+  const minimumHeight = Math.min(imageHeight, Math.round(imageHeight * 0.14));
+  if (bottom - top < minimumHeight) {
+    const center = (top + bottom) / 2;
+    top = Math.max(0, Math.floor(center - minimumHeight / 2));
+    bottom = Math.min(imageHeight, top + minimumHeight);
+    top = Math.max(0, bottom - minimumHeight);
+  }
+  if (bottom <= top) return null;
+  return { left: 0, top, width: imageWidth, height: bottom - top };
+}
 
-    // البحث عن اسم الأب
-    if (upperLine.includes('الاب') || upperLine.includes('الأب') || upperLine.includes('FATHER')) {
-      const targetStr = line + ' ' + (lines[i + 1] || '');
-      const arabicMatches = targetStr.match(/[\u0600-\u06FF]+/g);
-      if (arabicMatches && arabicMatches.length > 0) {
-        const filtered = arabicMatches.filter(w => !['اسم', 'الاب', 'الأب', 'Father', 'Name', 'الام', 'الأم'].includes(w));
-        if (filtered.length > 0) {
-          father_ar = filtered[filtered.length - 1];
+function findArabicNameRegion(lines, width, height) {
+  const nameBounds = findNameRegion(lines, width, height);
+  if (!nameBounds) return null;
+  const arabic = lines.filter((line) => line.bounds && /[\u0621-\u064A]/u.test(line.text) && !/[A-Za-z]/u.test(line.text) &&
+    line.bounds.top * height >= nameBounds.top &&
+    (line.bounds.top + line.bounds.height) * height <= nameBounds.top + nameBounds.height);
+  if (!arabic.length) return null;
+  const left = Math.max(0, Math.floor((Math.min(...arabic.map((line) => line.bounds.left)) - 0.04) * width));
+  const right = Math.min(width, Math.ceil((Math.max(...arabic.map((line) => line.bounds.left + line.bounds.width)) + 0.04) * width));
+  return right > left ? { ...nameBounds, left, width: right - left } : null;
+}
+
+function mapCropLines(lines, cropBounds, imageWidth, imageHeight) {
+  return lines.map((line) => ({
+    ...line,
+    bounds: line.bounds
+      ? {
+        left: (cropBounds.left + line.bounds.left * cropBounds.width) / imageWidth,
+        top: (cropBounds.top + line.bounds.top * cropBounds.height) / imageHeight,
+        width: line.bounds.width * cropBounds.width / imageWidth,
+        height: line.bounds.height * cropBounds.height / imageHeight
+      }
+      : null
+  }));
+}
+
+async function createEnhancedNameCrop(imageBuffer, cropBounds) {
+  const targetWidth = Math.min(2600, Math.max(cropBounds.width, 1400));
+  return sharp(imageBuffer)
+    .extract(cropBounds)
+    .resize({ width: targetWidth, withoutEnlargement: false })
+    .normalize()
+    .sharpen({ sigma: 0.6 })
+    .jpeg({ quality: 95 })
+    .toBuffer();
+}
+
+function logExtractionSummary(provider, sources, reviewFields, mrzValid) {
+  if (process.env.OCR_LOG_SUMMARY === 'false') return;
+  console.info(`[${provider}] Passport OCR completed`, {
+    fieldsWithSources: sources,
+    manualReviewFields: reviewFields,
+    mrzValidated: mrzValid
+  });
+}
+
+function getPaddleOcrDiagnostic(error) {
+  const message = typeof error?.message === 'string' ? error.message : '';
+  if (/timed out|abort/i.test(message) || error?.name === 'AbortError') {
+    return 'PADDLE_OCR_TIMEOUT';
+  }
+
+  const status = message.match(/returned HTTP (\d{3})/);
+  if (status) return `PADDLE_OCR_HTTP_${status[1]}`;
+
+  const code = error?.cause?.code || error?.code || message;
+  const safeCodes = new Set([
+    'ECONNREFUSED',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'EHOSTUNREACH',
+    'ENETUNREACH',
+    'EAI_AGAIN',
+    'ENOTFOUND',
+    'UND_ERR_CONNECT_TIMEOUT'
+  ]);
+  return safeCodes.has(code) ? `PADDLE_OCR_${code}` : 'PADDLE_OCR_UNAVAILABLE';
+}
+
+function getProviderWarning(warning, diagnostic) {
+  if (diagnostic && process.env.NODE_ENV !== 'production') {
+    return `${warning} (${diagnostic})`;
+  }
+  return warning;
+}
+
+function getPaddleOcrWarning(diagnostic) {
+  if (diagnostic === 'PADDLE_OCR_BLOCKED_BY_POLICY') {
+    return 'خدمة PaddleOCR محظورة بسياسة حماية ويندوز. يلزم اعتماد المكتبة من مسؤول الجهاز لتشغيلها؛ تُستخدم القراءة الاحتياطية حالياً.';
+  }
+  if (diagnostic === 'PADDLE_OCR_STARTUP_FAILED') {
+    return 'تعذر تشغيل خدمة PaddleOCR المحلية؛ تُستخدم القراءة الاحتياطية. راجع إعدادات خدمة OCR.';
+  }
+  return 'خدمة PaddleOCR المحلية غير متاحة؛ تم استخدام القراءة الاحتياطية.';
+}
+
+function detectImageType(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'jpeg';
+  if (buffer.readUInt32BE(0) === 0x89504e47) return 'png';
+  if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+    return 'webp';
+  }
+  const littleTiff = buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2a && buffer[3] === 0x00;
+  const bigTiff = buffer[0] === 0x4d && buffer[1] === 0x4d && buffer[2] === 0x00 && buffer[3] === 0x2a;
+  return littleTiff || bigTiff ? 'tiff' : null;
+}
+
+async function assessImageQuality(imageBuffer) {
+  try {
+    const { data, info } = await sharp(imageBuffer)
+      .resize({ width: 320, withoutEnlargement: true })
+      .grayscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let sum = 0;
+    let count = 0;
+    for (let y = 0; y < info.height; y += 1) {
+      const row = y * info.width;
+      for (let x = 1; x < info.width; x += 1) {
+        sum += Math.abs(data[row + x] - data[row + x - 1]);
+        count += 1;
+      }
+    }
+    const edgeEnergy = count ? sum / count : 0;
+    return {
+      edgeEnergy: Math.round(edgeEnergy * 100) / 100,
+      lowQuality: edgeEnergy < BLUR_EDGE_THRESHOLD
+    };
+  } catch {
+    return { edgeEnergy: null, lowQuality: false };
+  }
+}
+
+function checkOcrRateLimit(req) {
+  const key = String(req.user?.id || req.ip || 'anonymous');
+  const now = Date.now();
+  const windowMs = 60_000;
+  let bucket = ocrRateBuckets.get(key);
+  if (!bucket || now - bucket.resetAt > windowMs) {
+    bucket = { count: 0, resetAt: now };
+    ocrRateBuckets.set(key, bucket);
+    if (ocrRateBuckets.size > 5000) {
+      for (const [bucketKey, entry] of ocrRateBuckets) {
+        if (now - entry.resetAt > windowMs) ocrRateBuckets.delete(bucketKey);
+      }
+    }
+  }
+  bucket.count += 1;
+  return bucket.count <= OCR_RATE_LIMIT;
+}
+
+async function checkPaddleHealth() {
+  if (Date.now() - paddleHealthCache.checkedAt < 30_000) {
+    return paddleHealthCache.status;
+  }
+  try {
+    const serviceUrl = new URL(process.env.LOCAL_PADDLE_OCR_URL || pythonOcrServiceUrl());
+    const response = await fetch(new URL('/health', serviceUrl), {
+      signal: AbortSignal.timeout(2500)
+    });
+    paddleHealthCache = {
+      checkedAt: Date.now(),
+      status: response.ok && (await response.json()).ok === true ? 'available' : 'unhealthy'
+    };
+  } catch {
+    paddleHealthCache = { checkedAt: Date.now(), status: 'unavailable' };
+  }
+  return paddleHealthCache.status;
+}
+
+function pythonOcrServiceUrl() {
+  return process.env.LOCAL_PADDLE_OCR_URL || 'http://127.0.0.1:8765/ocr';
+}
+
+router.get('/ocr/health', authenticateToken, async (_req, res) => {
+  const [paddleStatus] = await Promise.all([checkPaddleHealth()]);
+  res.json({
+    status: 'ok',
+    engines: {
+      paddleocr: paddleStatus,
+      tesseract_mrz: mrzWorkerPromise ? 'ready' : 'not_loaded',
+      tesseract_visual: arabicWorkerPromise && englishWorkerPromise ? 'ready' : 'not_loaded'
+    },
+    ...(paddleStatus !== 'available' && {
+      engine_warning: getPaddleOcrWarning(getLocalOcrStatus().diagnostic)
+    }),
+    modes: {
+      local: { status: 'available' },
+      cloud: { ...cloudOcrService.getConfiguration(),
+        message: cloudOcrService.configurationMessage(cloudOcrService.getConfiguration().status) }
+    }
+  });
+});
+
+router.post('/ocr/passport', authenticateToken, requireStaff, upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'الملف مطلوب' });
+  const mode = req.body?.mode ?? 'local';
+  if (!['local', 'cloud'].includes(mode)) {
+    return res.status(400).json({ success: false, error: 'اختر طريقة قراءة صالحة: محلي أو سحابي.' });
+  }
+  if (!checkOcrRateLimit(req)) {
+    return res.status(429).json({ error: 'تم تجاوز عدد طلبات قراءة الجوازات المسموح بها. حاول بعد قليل.' });
+  }
+  if (ocrInFlight >= OCR_MAX_CONCURRENT) {
+    return res.status(429).json({ error: 'خدمة قراءة الجوازات مشغولة حالياً. حاول بعد لحظات.' });
+  }
+  if (mode === 'cloud') {
+    const config = cloudOcrService.getConfiguration();
+    if (config.status !== 'configured') {
+      return res.status(503).json({ success: false, mode, error: cloudOcrService.configurationMessage(config.status) });
+    }
+  }
+
+  ocrInFlight += 1;
+  const startedAt = Date.now();
+  const requestController = new AbortController();
+  const abortRequest = () => requestController.abort();
+  const closeResponse = () => { if (!res.writableEnded) abortRequest(); };
+  req.once?.('aborted', abortRequest);
+  res.once?.('close', closeResponse);
+  const stageLog = (stage, detail = {}) => {
+    if (process.env.OCR_LOG_SUMMARY === 'false') return;
+    console.info(`[OCR] ${stage}`, { durationMs: Date.now() - startedAt, ...detail });
+  };
+  try {
+    stageLog('request received', { bytes: req.file.size });
+    let inputBuffer = req.file.buffer;
+    const pdfInput = inputBuffer.subarray(0, 5).toString('ascii') === '%PDF-';
+    let pdfPageCount = null;
+    if (pdfInput) {
+      try {
+        const rendered = await rasterizePassportPdf(inputBuffer, Number(req.body?.page || 1));
+        inputBuffer = rendered.imageBuffer;
+        pdfPageCount = rendered.totalPages;
+      } catch (error) {
+        return res.status(400).json({ success: false, data: emptyPassportData(),
+          error: error.publicMessage || 'تعذرت قراءة PDF. تأكد أن الملف صالح وغير محمي بكلمة مرور.' });
+      }
+    }
+    const detectedType = detectImageType(inputBuffer);
+    if (!detectedType) {
+      return res.status(400).json({
+        data: emptyPassportData(),
+        success: false,
+        error: 'صيغة الملف غير مدعومة. استخدم PDF أو صورة JPEG أو PNG أو WebP صالحة.'
+      });
+    }
+
+    const metadata = await sharp(inputBuffer, { limitInputPixels: MAX_IMAGE_PIXELS }).metadata();
+    if (!metadata.width || !metadata.height || metadata.width < MIN_IMAGE_DIMENSION ||
+        metadata.height < MIN_IMAGE_DIMENSION ||
+        metadata.width * metadata.height > MAX_IMAGE_PIXELS ||
+        !['jpeg', 'png', 'webp', 'tiff'].includes(metadata.format) ||
+        metadata.format !== detectedType) {
+      return res.status(400).json({
+        data: emptyPassportData(),
+        success: false,
+        error: 'صيغة صورة الجواز غير مدعومة أو الصورة غير صالحة.'
+      });
+    }
+
+    const preparedImage = sharp(inputBuffer, { limitInputPixels: MAX_IMAGE_PIXELS })
+      .rotate()
+      .resize({ width: MAX_ANALYSIS_WIDTH, height: 3200, fit: 'inside', withoutEnlargement: true });
+    let orientedImage = await preparedImage.clone()
+      .jpeg({ quality: 94 })
+      .toBuffer();
+    let { width, height } = await sharp(orientedImage).metadata();
+    if (!width || !height) throw new Error('Unable to read oriented image dimensions');
+
+    const quality = await assessImageQuality(orientedImage);
+    const extraWarnings = [];
+    if (quality.lowQuality) {
+      extraWarnings.push({
+        code: 'low_quality_image',
+        field: null,
+        message: 'الصورة غير واضحة بما يكفي؛ قد تكون النتائج غير دقيقة. يفضّل التقاط صورة أفضل للإضاءة والتركيز.'
+      });
+    }
+    if (width < 600 || height < 400) {
+      extraWarnings.push({
+        code: 'low_resolution_image',
+        field: null,
+        message: 'دقة الصورة منخفضة؛ يُنصح بصورة بدقة أعلى لقراءة أدق.'
+      });
+    }
+
+    if (mode === 'cloud') {
+      try {
+        const result = await cloudOcrService.recognizePassport({ imageBuffer: orientedImage,
+          signal: requestController.signal, extraWarnings });
+        const { extraction } = result;
+        const success = hasPassportIdentity(extraction.data);
+        return res.status(success ? 200 : 422).json({
+          mode, provider: 'GEMINI_CLOUD', success,
+          data: extraction.data,
+          arabic_ocr_success: ['first_name_ar', 'father_name_ar', 'last_name_ar'].every((key) => Boolean(extraction.data[key])),
+          warning: success ? 'تمت القراءة السحابية. راجع الأسماء والأرقام والتواريخ قبل الحفظ.'
+            : 'لم تتمكن الخدمة السحابية من قراءة الاسم أو رقم الجواز. جرّب صورة أوضح لصفحة البيانات كاملة.',
+          review_fields: extraction.reviewFields,
+          extraction_sources: extraction.sources,
+          field_confidence: extraction.confidence,
+          ocr_contract: extraction.contract,
+          diagnostics: { processingMs: Date.now() - startedAt, model: result.model, cloud: result.diagnostics }
+        });
+      } catch (error) {
+        const diagnostic = /^GEMINI_OCR_[A-Z0-9_]+$/.test(error.code || '') ? error.code : 'GEMINI_OCR_UNAVAILABLE';
+        console.warn('[OCR] Cloud passport read failed:', diagnostic);
+        const errorMessage = diagnostic === 'GEMINI_OCR_HTTP_429'
+          ? 'بلغت الخدمة السحابية حد الاستخدام أو الرصيد. راجع حصة Gemini أو اختر القراءة المحلية.'
+          : diagnostic === 'GEMINI_OCR_TIMEOUT'
+            ? 'انتهت مهلة القراءة السحابية. أعد المحاولة أو اختر القراءة المحلية.'
+            : ['GEMINI_OCR_HTTP_401', 'GEMINI_OCR_HTTP_403'].includes(diagnostic)
+              ? 'تعذر اعتماد مفتاح الخدمة السحابية أو صلاحياته. راجع إعدادات Gemini في الخادم.'
+              : diagnostic === 'GEMINI_OCR_HTTP_404'
+                ? 'نموذج Gemini المحدد غير متاح. راجع اسم النموذج في إعدادات الخادم.'
+                : 'تعذرت القراءة السحابية. أعد المحاولة أو اختر القراءة المحلية.';
+        return res.status(diagnostic === 'GEMINI_OCR_HTTP_429' ? 429 : diagnostic === 'GEMINI_OCR_TIMEOUT' ? 504 : 502)
+          .json({ success: false, mode, error: errorMessage });
+      }
+    }
+
+    let paddleResult = { lines: [], crop_lines: [] };
+    let providerWarning = '';
+    let providerDiagnostic = '';
+    try {
+      await waitForLocalOcrService();
+      paddleResult = await pythonOcrService.recognizePassport({
+        imageBuffer: orientedImage,
+        timeoutMs: PADDLE_OCR_TIMEOUT_MS
+      });
+      if (paddleResult.processedImage?.length) {
+        const processedMetadata = await sharp(paddleResult.processedImage, { limitInputPixels: MAX_IMAGE_PIXELS }).metadata();
+        if (processedMetadata.width && processedMetadata.height) {
+          orientedImage = paddleResult.processedImage;
+          width = processedMetadata.width;
+          height = processedMetadata.height;
+        }
+      }
+      if (!paddleResult.lines.length) {
+        providerWarning = 'لم يتم استخراج نص من خدمة PaddleOCR؛ تم استخدام القراءة المحلية.';
+        providerDiagnostic = 'PADDLE_OCR_NO_TEXT';
+      }
+    } catch (error) {
+      providerDiagnostic = getPaddleOcrDiagnostic(error);
+      if (providerDiagnostic === 'PADDLE_OCR_ECONNREFUSED') {
+        providerDiagnostic = getLocalOcrStatus().diagnostic || providerDiagnostic;
+      }
+      console.warn('[OCR] Local PaddleOCR service unavailable; using local fallback:', providerDiagnostic);
+      providerWarning = getPaddleOcrWarning(providerDiagnostic);
+    }
+
+    let fallbackEnglishResult;
+    if (!paddleResult.lines.length) {
+      try {
+        // Keep fine Arabic strokes intact; avoid a second lossy JPEG encoding.
+        const fallbackInput = await preparedImage.clone().png().toBuffer();
+        const fallback = await orientFallbackPassport(fallbackInput, await getEnglishWorker());
+        orientedImage = fallback.imageBuffer;
+        width = fallback.width;
+        height = fallback.height;
+        fallbackEnglishResult = fallback.englishResult;
+        stageLog('fallback orientation selected', { angle: fallback.angle });
+      } catch { /* The independent Arabic and MRZ reads can still proceed. */ }
+    }
+
+    // Every engine and name crop now reads the same upright, deskewed image.
+    const mrzResultPromise = runMrzRead(orientedImage, width, height).catch(() => ({
+      data: null, valid: false, attempts: 0, consistent: true, repaired: false,
+      candidateLines: [], diagnostics: null, lineLengths: [], nameStructureValid: false
+    }));
+    const preliminary = mergePassportSources({ lines: paddleResult.lines }, null);
+    const arabicNeedsRetry = ['first_name_ar', 'father_name_ar', 'last_name_ar']
+      .some((field) => !preliminary.data[field] || (preliminary.confidence[field] ?? 0) < 0.9);
+    const localReadPromise = runLocalRead(orientedImage, width, height,
+      arabicNeedsRetry ? findArabicNameRegion(paddleResult.lines, width, height) : null,
+      fallbackEnglishResult).catch(() => ({ lines: [] }));
+    if (pdfPageCount > 1) extraWarnings.push({ code: 'pdf_page_selected', field: null,
+      message: `تمت قراءة الصفحة ${Number(req.body?.page || 1)} من ${pdfPageCount}. اختر صفحة بيانات جواز واحد في كل قراءة.` });
+
+    let paddleLines = [...paddleResult.lines];
+    if (paddleLines.length) {
+      const needsNameRetry = mergePassportSources({ lines: paddleLines }, null)
+        .reviewFields.length > 0;
+      const cropBounds = needsNameRetry
+        ? findNameRegion(paddleLines, width, height)
+        : null;
+      if (cropBounds) {
+        try {
+          const cropBuffer = await createEnhancedNameCrop(orientedImage, cropBounds);
+          const cropResult = await pythonOcrService.recognizePassport({
+            cropBuffer,
+            timeoutMs: PADDLE_OCR_TIMEOUT_MS
+          });
+          paddleResult.crop_lines = cropResult.crop_lines.length
+            ? cropResult.crop_lines
+            : cropResult.lines;
+          paddleLines = [
+            ...paddleLines,
+            ...mapCropLines(paddleResult.crop_lines, cropBounds, width, height)
+              .map((line) => ({ ...line, passId: `crop-${line.passId || 'default'}` }))
+          ];
+        } catch (error) {
+          console.warn('[OCR] Enhanced name-region OCR unavailable:', error.message);
         }
       }
     }
 
-    // البحث عن الاسم الشخصي
-    if ((upperLine.includes('الاسم') || upperLine.includes('NAME')) && !upperLine.includes('الاب') && !upperLine.includes('الأب')) {
-      const targetStr = line + ' ' + (lines[i + 1] || '');
-      const arabicMatches = targetStr.match(/[\u0600-\u06FF]+/g);
-      if (arabicMatches && arabicMatches.length > 0) {
-        const filtered = arabicMatches.filter(w => !['الجمهورية', 'العربية', 'السورية', 'جواز', 'سفر', 'الاسم'].includes(w));
-        if (filtered[0] && !first_ar) first_ar = filtered[0];
-      }
+    const [mrzResult, localResult] = await Promise.all([
+      mrzResultPromise,
+      localReadPromise
+    ]);
+    stageLog('engines finished', {
+      paddleLines: paddleLines.length,
+      tesseractLines: localResult.lines.length,
+      mrzDetected: mrzResult.candidateLines.length === 2,
+      mrzValid: mrzResult.valid,
+      mrzAttempts: mrzResult.attempts
+    });
+    const paddleMrzResult = extractMrzFromReadResult({ lines: paddleLines });
+    const paddleMrz = paddleMrzResult.data;
+    let mrzData = paddleMrzResult.partial && mrzResult.nameStructureValid ? mrzResult.data : paddleMrz || mrzResult.data;
+    const mrzAttempts = paddleMrzResult.attempts + mrzResult.attempts;
+    const mrzDocumentKey = (data) => JSON.stringify(['passport_number', 'date_of_birth', 'passport_expiry_date', 'nationality', 'gender'].map((field) => data[field]));
+    if (paddleMrz && mrzResult.data &&
+        mrzDocumentKey(paddleMrz) !== mrzDocumentKey(mrzResult.data)) {
+      extraWarnings.push({
+        code: 'mrz_sources_disagree',
+        field: null,
+        message: 'قراءتا MRZ من محركين مختلفين لم تتفقا؛ يرجى مراجعة الحقول يدويًا.'
+      });
+      mrzData = paddleMrz;
+    }
+    if (mrzData && !mrzData.first_name_en && !mrzData.last_name_en) {
+      extraWarnings.push({ code: 'mrz_name_line_unreadable', field: null,
+        message: 'تم التحقق من رقم الجواز والتواريخ في MRZ؛ سطر الأسماء غير واضح وتحتاج الأسماء إلى مراجعة القراءة المرئية.' });
+    }
+    if (mrzResult.repaired || paddleMrzResult.repaired) {
+      extraWarnings.push({
+        code: 'mrz_repaired',
+        field: null,
+        message: 'تم التعرف على MRZ بعد تصحيح التباسات أحرف شائعة؛ تم التحقق عبر أرقام التحقق. راجع الحقول المظللة.'
+      });
+    }
+    if (!mrzResult.consistent || !paddleMrzResult.consistent) {
+      extraWarnings.push({
+        code: 'mrz_inconsistent',
+        field: null,
+        message: 'محاولات قراءة MRZ المتعددة أعطت نتائج مختلفة؛ قد تكون الصورة مائلة أو غير واضحة.'
+      });
+    }
+    if (mrzResult.candidateLines.length && !mrzResult.valid && mrzResult.diagnostics) {
+      extraWarnings.push({
+        code: 'mrz_check_failed',
+        field: null,
+        message: `تم العثور على سطور MRZ محتملة لكنها لم تجتز التحقق الكامل (${mrzResult.diagnostics.failures.join(', ')}). يرجى مراجعة الحقول يدويًا.`
+      });
+    }
+    if (mrzData?.passport_expiry_date &&
+        mrzData.passport_expiry_date <= new Date().toISOString().slice(0, 10)) {
+      extraWarnings.push({
+        code: 'passport_expired',
+        field: 'passport_expiry_date',
+        message: 'تاريخ انتهاء جواز السفر المقروء قد يكون منتهي الصلاحية؛ تحقق من التاريخ.'
+      });
     }
 
-    // البحث عن النسبة / العائلة
-    if (upperLine.includes('النسبة') || upperLine.includes('SURNAME')) {
-      const targetStr = line + ' ' + (lines[i + 1] || '');
-      const arabicMatches = targetStr.match(/[\u0600-\u06FF]+/g);
-      if (arabicMatches && arabicMatches.length > 0) {
-        const filtered = arabicMatches.filter(w => !['النسبة', 'Surname'].includes(w));
-        if (filtered[0] && !last_ar) last_ar = filtered.join(' ');
-      }
-    }
-  }
+    const extraction = mergePassportSources(
+      { lines: paddleLines },
+      mrzData,
+      localResult,
+      'paddleocr',
+      { mrzAttempts, extraWarnings }
+    );
+    const rawOcr = {
+      paddleocr: paddleLines,
+      paddleocr_crop: paddleResult.crop_lines,
+      tesseract: localResult.lines
+    };
+    const extractedFields = Object.keys(extraction.data);
+    const OPTIONAL_REVIEW_EXEMPT_FIELDS = new Set([
+      'full_name_en', 'place_of_birth', 'place_of_issue',
+      'issuing_authority', 'document_type'
+    ]);
+    const reviewFields = [...new Set([
+      ...extraction.reviewFields,
+      ...extractedFields.filter((field) => {
+        if (field === 'full_name_en') return false;
+        const value = extraction.data[field];
+        const confidence = extraction.confidence[field];
+        const isEmpty = value === '' || value === null;
+        if (OPTIONAL_REVIEW_EXEMPT_FIELDS.has(field)) {
+          return !isEmpty && confidence !== null && confidence !== undefined && confidence < 0.8;
+        }
+        return isEmpty ||
+          (confidence !== null && confidence !== undefined && confidence < 0.8);
+      }),
+      ...(extraction.data.passport_expiry_date &&
+        extraction.data.passport_expiry_date <= new Date().toISOString().slice(0, 10)
+        ? ['passport_expiry_date']
+        : [])
+    ])];
+    const contract = buildOcrContract({
+      data: extraction.data,
+      sources: extraction.sources,
+      confidence: extraction.confidence,
+      reviewFields,
+      conflicts: extraction.conflicts,
+      agreements: extraction.agreements,
+      mrzAttempts,
+      extraWarnings
+    });
+    const provider = paddleLines.length ? 'PADDLEOCR_LOCAL' : 'LOCAL_FALLBACK';
+    const arabicOcrSuccess = [
+      extraction.data.first_name_ar,
+      extraction.data.father_name_ar,
+      extraction.data.last_name_ar
+    ].every(Boolean);
+    logExtractionSummary(provider, extraction.sources, reviewFields, Boolean(mrzData));
+    stageLog('response mapped', {
+      fieldsExtracted: Object.values(extraction.data).filter((v) => v !== '' && v !== null).length,
+      conflicts: extraction.conflicts.length,
+      requiresReview: reviewFields.length > 0
+    });
 
-  return { first_ar, father_ar, last_ar };
-}
-
-function extractPassportData(lines) {
-  const line1 = lines[0].padEnd(44, '<');
-  const line2 = lines[1].padEnd(44, '<');
-
-  let lastNameEn = '';
-  let givenEn = '';
-
-  const nameSection = line1.slice(5);
-  const parts = nameSection.split('<<');
-  
-  if (parts.length >= 2) {
-    lastNameEn = parts[0].replace(/</g, ' ').trim();
-    givenEn = parts[1].replace(/</g, ' ').trim();
-  } else {
-    const cleanName = nameSection.replace(/</g, ' ').trim().replace(/\s+/g, ' ');
-    const spaceParts = cleanName.split(' ');
-    lastNameEn = spaceParts[0] || '';
-    givenEn = spaceParts.slice(1).join(' ');
-  }
-
-  const { firstName: firstNameEn, fatherName: fatherNameEn, middleNames } = splitGivenNamesSmart(givenEn);
-
-  const passportNumber = line2.slice(0, 9).replace(/</g, '').trim();
-  const nationality = line2.slice(10, 13).replace(/</g, '').trim();
-  const birthDateRaw = line2.slice(13, 19);
-  const genderRaw = line2.slice(20, 21);
-  const expiryDateRaw = line2.slice(21, 27);
-
-  let valid = false;
-  try {
-    const parsed = mrz.parse(lines, { autocorrect: true });
-    valid = parsed.valid;
-  } catch (e) {}
-
-  return {
-    data: {
-      first_name_en: firstNameEn,
-      father_name_en: fatherNameEn,
-      last_name_en: lastNameEn,
-      first_name_ar: transliterateToAr(firstNameEn),
-      father_name_ar: transliterateToAr(fatherNameEn),
-      last_name_ar: transliterateToAr(lastNameEn),
-      passport_number: passportNumber || null,
-      passport_expiry_date: formatMrzDate(expiryDateRaw, 'expiration'),
-      date_of_birth: formatMrzDate(birthDateRaw, 'birth'),
-      nationality: nationality || 'SYR',
-      gender: genderRaw === 'M' ? 'M' : genderRaw === 'F' ? 'F' : null
-    },
-    valid
-  };
-}
-
-function sanitizeMRZLines(text) {
-  const rawLines = text
-    .toUpperCase()
-    .split(/\r?\n/)
-    .map((l) => l.replace(/[^A-Z0-9<]/g, '').trim())
-    .filter((l) => l.length >= 35 && l.length <= 50);
-
-  let firstLine = rawLines.find((l) => l.startsWith('P') && l.includes('<<')) ||
-                  rawLines.find((l) => l.startsWith('P') && l.length >= 38);
-
-  let secondLine = rawLines.find((l) => l !== firstLine && /\d{6}/.test(l) && l.length >= 38) ||
-                   rawLines.find((l) => l !== firstLine && !l.startsWith('P') && l.length >= 38);
-
-  if (!firstLine || !secondLine) {
-    const sorted = rawLines.filter(l => l.length >= 38).sort((a, b) => Math.abs(a.length - 44) - Math.abs(b.length - 44));
-    if (sorted.length >= 2) {
-      firstLine = sorted[0].padEnd(44, '<').slice(0, 44);
-      secondLine = sorted[1].padEnd(44, '<').slice(0, 44);
-    }
-  }
-
-  if (!firstLine || !secondLine) return [];
-  return [
-    firstLine.padEnd(44, '<').slice(0, 44),
-    secondLine.padEnd(44, '<').slice(0, 44)
-  ];
-}
-
-router.post('/ocr/passport', authenticateToken, upload.single('image'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'الملف مطلوب' });
-
-  let tempDirectory;
-  try {
-    tempDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'passport-ocr-'));
-    const worker = await getWorker();
-
-    const orientedImage = await sharp(req.file.buffer, { limitInputPixels: MAX_IMAGE_PIXELS }).rotate().toBuffer();
-    const { width, height } = await sharp(orientedImage).metadata();
-    
-    // محاولة قراءة شريط الـ MRZ في الأسفل (الأولوية القصوى للأرقام والتواريخ)
-    const croppedImagePath = path.join(tempDirectory, 'mrz-cropped.png');
-    const top = height > 300 ? Math.floor(height * 0.45) : 0;
-    
-    await sharp(orientedImage)
-      .extract({ left: 0, top, width, height: height - top })
-      .resize({ width: 3000, withoutEnlargement: false })
-      .grayscale()
-      .normalize()
-      .sharpen({ sigma: 1.5 })
-      .png()
-      .toFile(croppedImagePath);
-
-    let { data: { text: mrzText } } = await worker.recognize(croppedImagePath);
-    let lines = sanitizeMRZLines(mrzText);
-
-    let fullImageText = '';
-
-    // إذا لم يوضح شريط الـ MRZ، نلجأ لقراءة الصورة كاملة كاحتياط (Fallback)
-    if (lines.length !== 2) {
-      const fullImagePath = path.join(tempDirectory, 'mrz-full.png');
-      await sharp(orientedImage).resize({ width: 3000 }).grayscale().normalize().png().toFile(fullImagePath);
-      const fullResult = await worker.recognize(fullImagePath);
-      fullImageText = fullResult.data.text;
-      lines = sanitizeMRZLines(fullImageText);
-    } else {
-      // حتى لو نجح الـ MRZ، نقرأ الصورة الكاملة لاستخراج النصوص العربية المرئية
-      const fullImagePath = path.join(tempDirectory, 'mrz-full.png');
-      await sharp(orientedImage).resize({ width: 2500 }).grayscale().normalize().png().toFile(fullImagePath);
-      const fullResult = await worker.recognize(fullImagePath);
-      fullImageText = fullResult.data.text;
+    if (!hasPassportIdentity(extraction.data)) {
+      return res.status(422).json({
+        mode,
+        data: extraction.data,
+        success: false,
+        arabic_ocr_success: false,
+        warning: getProviderWarning(
+          ['لم يتمكن النظام من قراءة الاسم أو رقم الجواز. جرّب صورة مستقيمة تشمل صفحة البيانات كاملة وبإضاءة واضحة.', providerWarning].filter(Boolean).join(' '),
+          providerDiagnostic
+        ),
+        review_fields: reviewFields,
+        extraction_sources: extraction.sources,
+        field_confidence: extraction.confidence,
+        ocr_contract: contract,
+        raw_ocr: rawOcr
+      });
     }
 
-    if (lines.length !== 2) {
-      return res.status(422).json({ warning: 'لم يتمكن النظام من قراءة شريط الجواز (MRZ). تأكد من وضوح الصورة.' });
-    }
-
-    // استخراج البيانات الأساسية من الـ MRZ
-    const { data, valid } = extractPassportData(lines);
-    if (!data) return res.status(422).json({ warning: 'تعذر تحليل بيانات الجواز.' });
-
-    // استخراج الأسماء العربية مباشرة من حقول الجواز المرئية (Visual Zone)
-    const arabicNames = extractArabicFieldsFromVisualText(fullImageText);
-    if (arabicNames.first_ar) data.first_name_ar = arabicNames.first_ar;
-    if (arabicNames.father_ar) data.father_name_ar = arabicNames.father_ar;
-    if (arabicNames.last_ar) data.last_name_ar = arabicNames.last_ar;
-
-    res.json({ data, ...(!valid && { warning: 'تم استخراج البيانات، يرجى مراجعتها.' }) });
+    res.json({
+      mode,
+      provider,
+      data: extraction.data,
+      success: true,
+      arabic_ocr_success: arabicOcrSuccess,
+      ...(providerWarning && {
+        warning: getProviderWarning(providerWarning, providerDiagnostic)
+      }),
+      ...(reviewFields.length > 0 && { review_fields: reviewFields }),
+      extraction_sources: extraction.sources,
+      field_confidence: extraction.confidence,
+      ocr_contract: contract,
+      raw_ocr: rawOcr,
+      diagnostics: { processingMs: Date.now() - startedAt, image: quality, paddleocr: paddleResult.diagnostics || null }
+    });
   } catch (error) {
-    console.error('OCR Error:', error);
-    res.status(500).json({ error: 'فشلت معالجة الملف.' });
+    console.error('[OCR] Passport processing failed:', error.message);
+    res.status(500).json({
+      data: emptyPassportData(),
+      success: false,
+      error: 'فشلت معالجة الملف.'
+    });
   } finally {
-    if (tempDirectory) {
-      await fs.promises.rm(tempDirectory, { recursive: true, force: true }).catch(() => {});
-    }
+    requestController.abort();
+    req.removeListener?.('aborted', abortRequest);
+    res.removeListener?.('close', closeResponse);
+    ocrInFlight = Math.max(0, ocrInFlight - 1);
   }
 });
+
+router.closeOcrWorkers = async () => {
+  const pending = [mrzWorkerPromise, arabicWorkerPromise, englishWorkerPromise].filter(Boolean);
+  mrzWorkerPromise = arabicWorkerPromise = englishWorkerPromise = undefined;
+  await Promise.allSettled(pending.map(async (promise) => (await promise).terminate()));
+};
 
 module.exports = router;

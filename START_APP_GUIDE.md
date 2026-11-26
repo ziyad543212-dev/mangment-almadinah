@@ -1,49 +1,143 @@
-# دليل تشغيل تطبيق المدينة لإدارة الحج والعمرة
+# Run the application locally (Windows)
 
-## طريقة التشغيل
+The local application consists of PostgreSQL, the Express API, the React/Vite
+frontend, and a PaddleOCR service started automatically by the backend once
+installed. Passport scans go through
+the authenticated Express route; the standalone FastAPI/EasyOCR app is not used
+by the frontend.
 
-### الطريقة الأولى: استخدام ملفات بدء التشغيل (موصى به)
+## 1. Prerequisites
 
-1. **لتشغيل التطبيق:**
-   - انقر نقراً مزدوجاً على `start-app-simple.bat`
-   - سيتم فتح نافذتين للخوادم والمتصفح تلقائياً
+- Node.js 20 or newer
+- PostgreSQL 14 or newer
+- 64-bit Python 3.11 for the local PaddleOCR service
 
-2. **لإيقاف التطبيق:**
-   - أغلق نوافذ الخوادم يدوياً
-   - أو استخدم `stop-app.bat` لإيقافها دفعة واحدة
+Create a local database once:
 
-### الطريقة الثانية: التشغيل اليدوي
-
-**الخطوة 1: تشغيل الخادم الخلفي (Backend)**
-```bash
-cd backend
-node src/server.js
+```powershell
+psql -U postgres -h localhost -c "CREATE DATABASE mangment_almadinah;"
 ```
 
-**الخطوة 2: تشغيل الخادم الأمامي (Frontend)**
-في نافذة جديدة:
-```bash
-cd frontend
-npm run dev
+## 2. Configure local environment
+
+Copy `backend/.env.example` to the ignored `backend/.env.local` and set your
+own values:
+
+```dotenv
+NODE_ENV=development
+PORT=3001
+DATABASE_URL=postgresql://postgres:your-local-password@localhost:5432/mangment_almadinah
+JWT_SECRET=replace-with-a-random-secret-at-least-32-characters
+ALLOWED_ORIGINS=http://localhost:4173,http://localhost:5173,http://localhost:3000
+INITIAL_ADMIN_USERNAME=admin
+INITIAL_ADMIN_PASSWORD=replace-with-a-unique-password-at-least-12-characters
+UPLOAD_DIR=C:\path\to\project-data\uploads
 ```
 
-**الخطوة 3: فتح المتصفح**
-افتح المتصفح على: `http://localhost:5173`
+Use the Neon dashboard's connection URL in `.env.local` if desired; keep its
+TLS options. `.env.local` is loaded before `.env`. Never commit these files or
+share real credentials. The initial administrator is created only when the
+database has no users and is never reset on restart.
 
-## معلومات الاتصال
+Neon connections use the official PostgreSQL driver over secure WebSockets
+(port 443) by default. This also supports transactions and migrations when
+direct database TCP connections are blocked. Local PostgreSQL uses TCP as
+usual. Set `PG_TRANSPORT=tcp` only to explicitly select TCP for Neon.
 
-- **الخادم الخلفي:** http://localhost:3001
-- **الخادم الأمامي:** http://localhost:5173
+For local browser origins (`localhost`), the frontend uses
+`http://localhost:3001/api` directly. `VITE_API_URL` cannot override the local
+API target, so stale build-time URLs do not redirect local requests.
 
-## الإعداد الأولي
+## 3. Install dependencies
 
-عند تشغيل التطبيق لأول مرة، ستحتاج إلى:
-1. إنشاء حساب مسؤول (admin)
-2. تسجيل الدخول باستخدام هذا الحساب
+```powershell
+Set-Location 'C:\Users\<your-user>\Desktop\mang\backend'
+npm install
+```
 
-## استكشاف الأخطاء
+```powershell
+Set-Location 'C:\Users\<your-user>\Desktop\mang\frontend'
+npm install
+```
 
-إذا لم يعمل التطبيق:
-1. تأكد من تثبيت Node.js
-2. تأكد من تثبيت المكتبات: `npm install` (في المجلد الرئيسي) و `cd frontend && npm install`
-3. تأكد من أن المنافذ 3001 و 5173 غير مستخدمة
+## 4. Start local PaddleOCR
+
+The backend starts the installed Python OCR service automatically. To start it
+manually for troubleshooting, run:
+
+```powershell
+Set-Location 'C:\Users\DELL\Desktop\mang\backend\src\ocr-service'
+.\start-ocr.ps1
+```
+
+The script prefers the installed portable Python runtime, loads the existing
+models, and listens on `127.0.0.1:8765`. Keep this window open. Run
+`.\install-ocr.ps1` only if the existing virtual environment or pinned
+dependencies need installation.
+
+## 5. Start the local application
+
+Double-click `start-app.bat`, or run it from PowerShell:
+
+```powershell
+Set-Location 'C:\Users\DELL\Desktop\mang'
+.\start-app.bat
+```
+
+The launcher waits for the database and API to be ready before opening
+`http://localhost:5173`. It reuses running servers and displays a failure if a
+required server cannot start. Keep its server windows open during use.
+`start-app-simple.bat` uses the same launcher.
+
+For manual startup, open a PowerShell window:
+```powershell
+Set-Location 'C:\Users\<your-user>\Desktop\mang\backend'
+npm start
+```
+
+In another PowerShell window:
+```powershell
+Set-Location 'C:\Users\<your-user>\Desktop\mang\frontend'
+npm start
+```
+
+The frontend `npm start` rebuilds the current sources before starting Vite
+Preview at `http://localhost:4173`. The backend listens on port `3001`; verify
+it at `http://localhost:3001/api/health`. For fast frontend development with
+hot reload, use `npm run dev` instead; it serves port `5173`.
+
+## Troubleshooting
+
+### Choose local or cloud passport reading
+
+The passport panel defaults to **محلي** (local), which does not call Gemini.
+Choose **سحابي (Gemini)** before uploading to send the selected passport page
+to Google for full-field extraction. Re-read the selected file after switching
+modes. Cloud mode needs Internet access and the server-side Gemini settings
+documented in [the OCR guide](./backend/src/ocr-service/README.md#local-or-cloud-passport-ocr).
+Its API usage may be billed. The UI reports unavailable configuration and live
+quota/credential errors without automatically switching engines.
+
+### Local startup issues
+
+- **PostgreSQL connection errors:** check the PostgreSQL service, database name,
+  username/password, and `DATABASE_URL`. Local PostgreSQL normally does not
+  require TLS.
+- **Login or 401/403 errors:** verify that the configured administrator exists
+  and that the frontend points at the same backend. Tokens expire after 24
+  hours. Passwords must be at least 12 characters.
+- **Passport OCR falls back:** start `.\start-ocr.ps1` in
+  `backend\src\ocr-service` and verify `http://127.0.0.1:8765/health`.
+  Express retains the Tesseract/MRZ fallback if the service is unavailable.
+- **Windows blocks PaddleOCR:** if startup reports
+  `PADDLE_OCR_BLOCKED_BY_POLICY` or "An Application Control policy has blocked
+  this file", have the device administrator review the installed Paddle
+  library under the device's application policy. The app reports this reason
+  and uses local Tesseract with orientation checks, separate Arabic columns,
+  and name-region retries. A scan containing only ancillary fields (such as
+  expiry or place of issue) is reported as failed.
+- **Port already in use:** check ports 3001, 4173, 5173, and 8765, then change the
+  corresponding configuration if required.
+
+For Render/Vercel setup and production restore safeguards, see
+[DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md).

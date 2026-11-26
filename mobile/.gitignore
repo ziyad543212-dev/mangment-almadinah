@@ -1,0 +1,14 @@
+node_modules/
+.expo/
+dist/
+android/
+ios/
+artifacts/
+*.keystore
+*.jks
+credentials.json
+.signing/
+.toolchain/
+.web-build/
+src/generated-ui.ts
+.env*

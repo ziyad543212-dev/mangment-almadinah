@@ -1,0 +1,13 @@
+node_modules/
+.expo/
+android/
+ios/
+artifacts/
+dist/
+test/
+.env*
+*.keystore
+*.jks
+credentials.json
+.signing/
+.toolchain/

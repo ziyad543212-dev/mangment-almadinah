@@ -1,183 +1,66 @@
+import { useEffect } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
+import { LayoutDashboard, Plane, Wallet, ChartNoAxesCombined, Settings, Moon, Sun, LogOut } from 'lucide-react';
 import { authService } from '../services/auth';
 import { useTheme } from '../contexts/ThemeContext';
 import LogoPng from '/Logo.png';
+import ConnectionStatus from './ConnectionStatus';
+import { useOffline } from '../services/offline';
+
+const menuItems = [
+  { path: '/dashboard', label: 'الرئيسية', desktopLabel: 'لوحة التحكم', Icon: LayoutDashboard },
+  { path: '/trips', label: 'الرحلات', desktopLabel: 'الرحلات', Icon: Plane },
+  { path: '/payments', label: 'الدفعات', desktopLabel: 'الدفعات', Icon: Wallet },
+  { path: '/reports', label: 'التقارير', desktopLabel: 'التقارير', Icon: ChartNoAxesCombined },
+  { path: '/settings', label: 'الإعدادات', desktopLabel: 'الإعدادات', Icon: Settings },
+];
 
 function Layout() {
-  const location = useLocation();
+  const offline = useOffline();
+  const { pathname } = useLocation();
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
+  const visibleMenuItems = menuItems.filter(item => item.path !== '/payments' || authService.isAdmin());
+  useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
 
-  const handleLogout = () => {
+  function handleLogout() {
     if (confirm('هل أنت متأكد من تسجيل الخروج؟')) {
       authService.logout();
       navigate('/login');
     }
-  };
+  }
 
-  const menuItems = [
-    { path: '/dashboard', label: 'لوحة التحكم', icon: '📊' },
-    { path: '/trips', label: 'الرحلات', icon: '✈️' },
-    { path: '/payments', label: 'الدفعات', icon: '💰' },
-    { path: '/reports', label: 'التقارير', icon: '📈' },
-    { path: '/settings', label: 'الإعدادات', icon: '⚙️' },
-  ];
+  const links = (mobile: boolean) => visibleMenuItems.map(({ path, label, desktopLabel, Icon }) => {
+    const active = pathname === path || pathname.startsWith(path + '/') || path === '/trips' && pathname.startsWith('/pilgrims/');
+    return <Link key={path} to={path} className={`app-nav-link${active ? ' is-active' : ''}`} aria-current={active ? 'page' : undefined}>
+      <Icon size={22} strokeWidth={active ? 2.4 : 1.8} aria-hidden="true" />
+      <span>{mobile ? label : desktopLabel}</span>
+    </Link>;
+  });
 
-  return (
-    <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#f8f9fa' }}>
-      {/* Sidebar */}
-      <aside
-        style={{
-          width: '260px',
-          backgroundColor: '#1a1a2e',
-          color: 'white',
-          display: 'flex',
-          flexDirection: 'column',
-          position: 'fixed',
-          right: 0,
-          top: 0,
-          bottom: 0,
-          zIndex: 100,
-        }}
-      >
-        {/* Logo */}
-        <div
-          style={{
-            padding: '1.5rem',
-            borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-            textAlign: 'center',
-          }}
-        >
-          <img
-            src={LogoPng}
-            alt="شركة المدينة للحج والعمرة"
-            style={{
-              width: '80px',
-              height: 'auto',
-              marginBottom: '0.5rem',
-            }}
-          />
-          <h2
-            style={{
-              fontSize: '1rem',
-              fontWeight: '600',
-              margin: 0,
-              color: '#D4AF37',
-            }}
-          >
-            شركة المدينة
-          </h2>
-          <p style={{ fontSize: '0.75rem', margin: 0, opacity: 0.7 }}>
-            للحج والعمرة
-          </p>
-        </div>
+  const accountActions = <>
+    <button type="button" className="app-icon-button" onClick={toggleTheme} aria-label={theme === 'light' ? 'تفعيل الوضع الليلي' : 'تفعيل الوضع العادي'}>
+      {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
+    </button>
+    <button type="button" className="app-icon-button" onClick={handleLogout} aria-label="تسجيل الخروج"><LogOut size={20} /></button>
+  </>;
 
-        {/* Navigation */}
-        <nav style={{ flex: 1, padding: '1rem 0' }}>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {menuItems.map((item) => {
-              const isActive = location.pathname === item.path;
-              return (
-                <li key={item.path}>
-                  <Link
-                    to={item.path}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.75rem',
-                      padding: '0.75rem 1.5rem',
-                      color: isActive ? '#D4AF37' : 'rgba(255, 255, 255, 0.7)',
-                      textDecoration: 'none',
-                      fontWeight: isActive ? '600' : '400',
-                      backgroundColor: isActive ? 'rgba(212, 175, 55, 0.1)' : 'transparent',
-                      borderRight: isActive ? '3px solid #D4AF37' : '3px solid transparent',
-                      transition: 'all 0.2s',
-                    }}
-                  >
-                    <span style={{ fontSize: '1.25rem' }}>{item.icon}</span>
-                    <span>{item.label}</span>
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
-
-        {/* Theme Toggle & Logout */}
-        <div style={{ padding: '1rem', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-          <button
-            onClick={toggleTheme}
-            style={{
-              width: '100%',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.75rem',
-              padding: '0.75rem 1.5rem',
-              backgroundColor: 'transparent',
-              border: 'none',
-              color: 'rgba(255, 255, 255, 0.7)',
-              cursor: 'pointer',
-              fontSize: '1rem',
-              fontWeight: '400',
-              transition: 'all 0.2s',
-              marginBottom: '0.5rem',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = '#D4AF37';
-              e.currentTarget.style.backgroundColor = 'rgba(212, 175, 55, 0.1)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)';
-              e.currentTarget.style.backgroundColor = 'transparent';
-            }}
-          >
-            <span style={{ fontSize: '1.25rem' }}>{theme === 'light' ? '🌙' : '☀️'}</span>
-            <span>{theme === 'light' ? 'الوضع الليلي' : 'الوضع العادي'}</span>
-          </button>
-          <button
-            onClick={handleLogout}
-            style={{
-              width: '100%',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.75rem',
-              padding: '0.75rem 1.5rem',
-              backgroundColor: 'transparent',
-              border: 'none',
-              color: 'rgba(255, 255, 255, 0.7)',
-              cursor: 'pointer',
-              fontSize: '1rem',
-              fontWeight: '400',
-              transition: 'all 0.2s',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = '#dc3545';
-              e.currentTarget.style.backgroundColor = 'rgba(220, 53, 69, 0.1)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)';
-              e.currentTarget.style.backgroundColor = 'transparent';
-            }}
-          >
-            <span style={{ fontSize: '1.25rem' }}>🚪</span>
-            <span>تسجيل الخروج</span>
-          </button>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main
-        style={{
-          flex: 1,
-          marginRight: '260px',
-          padding: '2rem',
-          overflowY: 'auto',
-        }}
-      >
-        <Outlet />
-      </main>
-    </div>
-  );
+  return <div className="app-shell">
+    <aside className="app-sidebar" aria-label="القائمة الرئيسية">
+      <Link to="/dashboard" className="app-brand app-brand-desktop">
+        <img src={LogoPng} alt="لوغو المدينة" />
+        <strong>شركة المدينة</strong><small>للحج والعمرة</small>
+      </Link>
+      <nav className="app-desktop-nav" aria-label="التنقل">{links(false)}</nav>
+      <div className="app-account-actions">{accountActions}</div>
+    </aside>
+    <header className="app-mobile-header">
+      <Link to="/dashboard" className="app-brand"><img src={LogoPng} alt="" /><span><strong>المدينة</strong><small>للحج والعمرة</small></span></Link>
+      <div className="app-account-actions">{accountActions}</div>
+    </header>
+    <main className="app-main" id="main-content"><ConnectionStatus /><Outlet key={offline ? 'offline' : 'online'} /></main>
+    <nav className="app-bottom-nav" style={{ gridTemplateColumns: `repeat(${visibleMenuItems.length}, minmax(0, 1fr))` }} aria-label="التنقل الرئيسي للهاتف">{links(true)}</nav>
+  </div>;
 }
 
 export default Layout;

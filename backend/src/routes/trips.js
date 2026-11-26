@@ -1,21 +1,34 @@
 const express = require('express');
 const router = express.Router();
-const { authenticateToken } = require('../auth');
+const { authenticateToken, requireStaff } = require('../auth');
+const { protectFinancialData } = require('../services/financial-visibility');
+router.use(protectFinancialData);
 const { query, queryGet, queryRun } = require('./helpers');
+const { toCents, toDollars, paymentActivity } = require('../services/finance');
 
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const { page = 1, limit = 10, search, startDate, endDate, sortBy = 'trip_date', sortOrder = 'DESC' } = req.query;
-    const offset = (page - 1) * limit;
+    const pageNumber = Number(page);
+    const pageSize = Number(limit);
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 ||
+        !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+      return res.status(400).json({ error: 'بيانات تقسيم الصفحات غير صالحة' });
+    }
+    const offset = (pageNumber - 1) * pageSize;
 
     let sql = `
       SELECT
         t.*,
-        COUNT(p.id) as pilgrim_count,
-        COALESCE(SUM(pay.amount_usd), 0) as total_received
+        COUNT(DISTINCT p.id) as pilgrim_count,
+        COALESCE(SUM(pay.total_received), 0) as total_received
       FROM trips t
       LEFT JOIN pilgrims p ON t.id = p.trip_id
-      LEFT JOIN payments pay ON p.id = pay.pilgrim_id
+      LEFT JOIN (
+        SELECT pilgrim_id, SUM(amount_usd) AS total_received
+        FROM payments
+        GROUP BY pilgrim_id
+      ) pay ON p.id = pay.pilgrim_id
     `;
     const params = [];
     const conditions = [];
@@ -47,9 +60,18 @@ router.get('/', authenticateToken, async (req, res) => {
     sql += ` ORDER BY ${sortField} ${sortDirection}`;
 
     sql += ' LIMIT ? OFFSET ?';
-    params.push(parseInt(limit), parseInt(offset));
+    params.push(pageSize, offset);
 
-    const trips = await query(sql, params);
+    const trips = (await query(sql, params)).map((trip) => {
+      const costCents = toCents(trip.trip_cost_usd || 0);
+      const receivedCents = toCents(trip.total_received || 0);
+      return {
+        ...trip,
+        trip_cost_usd: toDollars(costCents),
+        total_received: toDollars(receivedCents),
+        net_trip: toDollars(receivedCents - costCents)
+      };
+    });
 
     let countQuery = 'SELECT COUNT(*) as total FROM trips t';
     if (conditions.length > 0) {
@@ -60,10 +82,10 @@ router.get('/', authenticateToken, async (req, res) => {
     res.json({
       trips,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNumber,
+        limit: pageSize,
         total: parseInt(countResult.total) || 0,
-        totalPages: Math.ceil((parseInt(countResult.total) || 0) / limit)
+        totalPages: Math.ceil((parseInt(countResult.total) || 0) / pageSize)
       }
     });
   } catch (err) {
@@ -84,28 +106,34 @@ router.get('/:id', authenticateToken, async (req, res) => {
     const pilgrims = await query(`
       SELECT
         p.*,
-        COALESCE(SUM(pay.amount_usd), 0) as total_received,
-        COUNT(pay.id) as payment_count
+        COALESCE(pay.total_received, 0) as total_received,
+        COALESCE(pay.payment_count, 0) as payment_count
       FROM pilgrims p
-      LEFT JOIN payments pay ON p.id = pay.pilgrim_id
+      LEFT JOIN (
+        SELECT pilgrim_id, SUM(amount_usd) AS total_received, COUNT(*) AS payment_count
+        FROM payments
+        GROUP BY pilgrim_id
+      ) pay ON p.id = pay.pilgrim_id
       WHERE p.trip_id = ?
-      GROUP BY p.id
     `, [id]);
 
-    const totalReceived = pilgrims.reduce((sum, p) => sum + parseFloat(p.total_received || 0), 0);
-    const tripCost = parseFloat(trip.trip_cost_usd || 0);
-    const totalOutstanding = Math.max(0, tripCost - totalReceived);
-    const netTrip = totalReceived - tripCost;
+    const totalReceivedCents = pilgrims.reduce((sum, pilgrim) => sum + toCents(pilgrim.total_received || 0), 0n);
+    const tripCostCents = toCents(trip.trip_cost_usd || 0);
+    const netTripCents = totalReceivedCents - tripCostCents;
 
     res.json({
       ...trip,
+      trip_cost_usd: toDollars(tripCostCents),
       pilgrims: pilgrims.map(p => ({
         ...p,
-        payment_status: parseFloat(p.total_received) > 0 ? 'مدفوع جزئيًا' : 'غير مدفوع'
+        total_received: toDollars(toCents(p.total_received || 0)),
+        payment_count: Number(p.payment_count),
+        payment_status: paymentActivity(p.total_received || 0)
       })),
-      total_received: totalReceived,
-      total_outstanding: totalOutstanding,
-      net_trip: netTrip,
+      total_received: toDollars(totalReceivedCents),
+      total_outstanding: null,
+      operating_deficit: toDollars(tripCostCents > totalReceivedCents ? tripCostCents - totalReceivedCents : 0n),
+      net_trip: toDollars(netTripCents),
       pilgrim_count: pilgrims.length
     });
   } catch (err) {
@@ -114,17 +142,25 @@ router.get('/:id', authenticateToken, async (req, res) => {
   }
 });
 
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', authenticateToken, requireStaff, async (req, res) => {
   try {
     const { name, trip_date, trip_cost_usd, notes } = req.body;
 
-    if (!name || !trip_date) {
+    if (typeof name !== 'string' || !name.trim() || name.length > 200 ||
+        typeof trip_date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(trip_date)) {
       return res.status(400).json({ error: 'اسم الرحلة وتاريخ الرحلة مطلوبان' });
+    }
+    let tripCostCents;
+    try {
+      tripCostCents = toCents(req.user.role === 'admin' ? trip_cost_usd ?? 0 : 0);
+      if (tripCostCents < 0n) throw new RangeError();
+    } catch {
+      return res.status(400).json({ error: 'تكلفة الرحلة يجب أن تكون مبلغاً صالحاً غير سالب' });
     }
 
     const result = await queryRun(
-      'INSERT INTO trips (name, trip_date, trip_cost_usd, notes) VALUES (?, ?, ?, ?)',
-      [name, trip_date, trip_cost_usd || 0, notes || null]
+      'INSERT INTO trips (name, trip_date, trip_cost_usd, notes) VALUES (?, ?, ?, ?) RETURNING id',
+      [name.trim(), trip_date, toDollars(tripCostCents), typeof notes === 'string' ? notes.trim() || null : null]
     );
 
     res.status(201).json({ message: 'تمت إضافة الرحلة بنجاح', id: result.lastID });
@@ -134,18 +170,26 @@ router.post('/', authenticateToken, async (req, res) => {
   }
 });
 
-router.put('/:id', authenticateToken, async (req, res) => {
+router.put('/:id', authenticateToken, requireStaff, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, trip_date, trip_cost_usd, notes } = req.body;
 
-    if (!name || !trip_date) {
+    if (typeof name !== 'string' || !name.trim() || name.length > 200 ||
+        typeof trip_date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(trip_date)) {
       return res.status(400).json({ error: 'اسم الرحلة وتاريخ الرحلة مطلوبان' });
+    }
+    let tripCostCents;
+    try {
+      tripCostCents = toCents(req.user.role === 'admin' ? trip_cost_usd ?? 0 : 0);
+      if (tripCostCents < 0n) throw new RangeError();
+    } catch {
+      return res.status(400).json({ error: 'تكلفة الرحلة يجب أن تكون مبلغاً صالحاً غير سالب' });
     }
 
     const result = await queryRun(
-      'UPDATE trips SET name = ?, trip_date = ?, trip_cost_usd = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [name, trip_date, trip_cost_usd || 0, notes || null, id]
+      'UPDATE trips SET name = ?, trip_date = ?, trip_cost_usd = CASE WHEN ? THEN ? ELSE trip_cost_usd END, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [name.trim(), trip_date, req.user.role === 'admin', toDollars(tripCostCents), typeof notes === 'string' ? notes.trim() || null : null, id]
     );
 
     if (result.changes === 0) {
@@ -159,12 +203,19 @@ router.put('/:id', authenticateToken, async (req, res) => {
   }
 });
 
-router.delete('/:id', authenticateToken, async (req, res) => {
+router.delete('/:id', authenticateToken, requireStaff, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await queryRun('DELETE FROM trips WHERE id = ?', [id]);
+    const result = req.user.role === 'admin'
+      ? await queryRun('DELETE FROM trips WHERE id = ?', [id])
+      : await queryRun(`DELETE FROM trips WHERE id = ? AND NOT EXISTS (
+          SELECT 1 FROM payments pay JOIN pilgrims p ON p.id = pay.pilgrim_id WHERE p.trip_id = trips.id
+        )`, [id]);
 
     if (result.changes === 0) {
+      if (req.user.role !== 'admin' && await queryGet('SELECT id FROM trips WHERE id = ?', [id])) {
+        return res.status(403).json({ error: 'يرجى مراجعة المدير لحذف هذا السجل' });
+      }
       return res.status(404).json({ error: 'الرحلة غير موجودة' });
     }
 

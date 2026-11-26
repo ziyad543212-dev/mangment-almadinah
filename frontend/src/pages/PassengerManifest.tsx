@@ -13,7 +13,10 @@ interface Pilgrim {
   father_name_en?: string;
   last_name_en?: string;
   passport_number: string;
-  visa_number: string;
+  date_of_birth?: string | null;
+  origin_city?: string | null;
+  destination_city?: string | null;
+  route?: string;
   nationality: string;
 }
 
@@ -95,9 +98,9 @@ function PassengerManifest() {
           alignItems: 'center',
           justifyContent: 'space-between',
         }}
-        className="manifest-toolbar"
+        className="manifest-toolbar page-header"
       >
-        <div>
+        <div className="">
           <button
             onClick={() => navigate(`/trips/${tripId}`)}
             className="btn btn-secondary"
@@ -131,7 +134,7 @@ function PassengerManifest() {
 
       {/* معلومات المركبة والسائقين في أعلى الكشف */}
       <div className="card" style={{ marginBottom: '1.5rem', backgroundColor: '#f8f9fa', padding: '1.25rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }} className="responsive-grid">
           <div>
             <span style={{ color: '#666', fontSize: '0.875rem', display: 'block' }}>رقم المركبة:</span>
             <strong style={{ fontSize: '1.125rem', color: '#1a1a2e' }}>{trip?.vehicle_number || 'غير محدد'}</strong>
@@ -149,14 +152,15 @@ function PassengerManifest() {
 
       <div className="card manifest-card" style={{ padding: 0 }}>
         <div className="table-container">
-          <table className="table">
+          <table className="table responsive-table">
             <thead>
               <tr>
                 <th>م</th>
                 <th>اسم المعتمر بالعربي</th>
                 <th>اسم المعتمر بالإنكليزي</th>
                 <th>رقم جواز السفر</th>
-                <th>رقم الفيزا</th>
+                <th>المواليد / تاريخ الميلاد</th>
+                <th>الوجهة</th>
                 <th>الجنسية</th>
               </tr>
             </thead>
@@ -164,17 +168,18 @@ function PassengerManifest() {
               {pilgrims.length > 0 ? (
                 pilgrims.map((pilgrim, index) => (
                   <tr key={pilgrim.id}>
-                    <td>{index + 1}</td>
-                    <td>{getFullNameAr(pilgrim)}</td>
-                    <td>{getFullNameEn(pilgrim)}</td>
-                    <td>{pilgrim.passport_number}</td>
-                    <td>{pilgrim.visa_number || '-'}</td>
-                    <td>{pilgrim.nationality}</td>
+                    <td data-label="م"><div className="cell-value">{index + 1}</div></td>
+                    <td data-label="اسم المعتمر بالعربي"><div className="cell-value">{getFullNameAr(pilgrim)}</div></td>
+                    <td data-label="اسم المعتمر بالإنكليزي"><div className="cell-value">{getFullNameEn(pilgrim)}</div></td>
+                    <td data-label="رقم جواز السفر"><div className="cell-value">{pilgrim.passport_number}</div></td>
+                    <td data-label="المواليد / تاريخ الميلاد"><div className="cell-value">{pilgrim.date_of_birth ? new Date(`${pilgrim.date_of_birth.slice(0, 10)}T00:00:00`).toLocaleDateString('ar-SA') : '-'}</div></td>
+                    <td data-label="الوجهة"><div className="cell-value">{pilgrim.route || `${pilgrim.origin_city || 'دمشق'} - ${pilgrim.destination_city || 'جدة'}`}</div></td>
+                    <td data-label="الجنسية"><div className="cell-value">{pilgrim.nationality}</div></td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: '3rem' }}>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: '3rem' }}>
                     <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>👥</div>
                     <p style={{ color: '#666' }}>لا يوجد معتمرين في هذه الرحلة</p>
                   </td>

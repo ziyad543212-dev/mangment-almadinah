@@ -1,12 +1,15 @@
-import { useState, useEffect } from 'react';
+import { authService } from '../services/auth';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 
 function Reports() {
+  const isAdmin = authService.isAdmin();
   const navigate = useNavigate();
   const [summary, setSummary] = useState<any>(null);
   const [nationalities, setNationalities] = useState<any[]>([]);
   const [trips, setTrips] = useState<any[]>([]);
+  const [tripFinancials, setTripFinancials] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState({
@@ -16,17 +19,7 @@ function Reports() {
     tripId: '',
   });
 
-  useEffect(() => {
-    // Check if token exists before fetching
-    const token = localStorage.getItem('token');
-    if (!token) {
-      navigate('/login');
-      return;
-    }
-    fetchReports();
-  }, [filters, navigate]);
-
-  const fetchReports = async () => {
+  const fetchReports = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -35,20 +28,22 @@ function Reports() {
       if (filters.endDate) params.append('endDate', filters.endDate);
       if (filters.nationality) params.append('nationality', filters.nationality);
       if (filters.tripId) params.append('tripId', filters.tripId);
+      const queryString = params.toString();
 
-      const [summaryRes, nationalitiesRes, tripsRes] = await Promise.all([
-        api.get(`/api/reports/summary?${params.toString()}`),
-        api.get('/api/reports/nationalities'),
+      const [summaryRes, nationalitiesRes, tripsRes, tripFinancialsRes] = await Promise.all([
+        api.get(`/api/reports/summary?${queryString}`),
+        api.get(`/api/reports/nationalities?${queryString}`),
         api.get('/api/reports/trips'),
+        api.get(`/api/reports/by-trip?${queryString}`),
       ]);
 
       setSummary(summaryRes.data);
       setNationalities(nationalitiesRes.data);
       setTrips(tripsRes.data);
-    } catch (error: any) {
-      console.error('Error fetching reports:', error);
-      if (error.response?.status === 401 || error.response?.status === 403) {
-        // Token invalid, redirect to login
+      setTripFinancials(tripFinancialsRes.data);
+    } catch (requestError: any) {
+      console.error('Error fetching reports:', requestError);
+      if (requestError.response?.status === 401 || requestError.response?.status === 403) {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         navigate('/login');
@@ -58,21 +53,32 @@ function Reports() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [filters.startDate, filters.endDate, filters.nationality, filters.tripId, navigate]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      navigate('/login');
+      return;
+    }
+    fetchReports();
+  }, [fetchReports, navigate]);
 
   const handleExportCSV = () => {
     const csvContent = [
       ['التقرير', 'القيمة'],
       ['إجمالي الرحلات', summary?.total_trips || 0],
       ['إجمالي المعتمرين', summary?.total_pilgrims || 0],
+      ...(isAdmin ? [
       ['تكاليف الرحلات', `$${summary?.total_trip_cost?.toFixed(2) || 0}`],
       ['إجمالي المقبوض بالدولار', `$${summary?.total_received?.toFixed(2) || 0}`],
-      ['إجمالي غير المقبوض', `$${summary?.total_outstanding?.toFixed(2) || 0}`],
-      ['صافي الإجمالي', `$${summary?.net_total?.toFixed(2) || 0}`],
-      ['مدفوع', summary?.with_payments || 0],
-      ['غير مدفوع', summary?.without_payments || 0],
+      ['رصيد الأفراد', 'غير متاح لعدم تحديد سعر مستقل للمعتمر'],
+      ['صافي الرحلات (المقبوض ناقص التكلفة)', `$${summary?.net_total?.toFixed(2) || 0}`],
+      ['معتمرون لديهم دفعات مسجلة', summary?.with_payments || 0],
+      ['معتمرون بلا دفعات مسجلة', summary?.without_payments || 0],
       ['إجمالي الدفعات النقدية', `$${summary?.cash_total?.toFixed(2) || 0}`],
       ['إجمالي شام كاش', `$${summary?.sham_cash_total?.toFixed(2) || 0}`],
+      ] : []),
     ]
       .map((row) => row.join(','))
       .join('\n');
@@ -98,7 +104,7 @@ function Reports() {
 
   if (error) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '3rem' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '3rem' }} className="row-actions">
         <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>⚠️</div>
         <h2 style={{ color: '#dc3545', marginBottom: '1rem' }}>خطأ في تحميل البيانات</h2>
         <p style={{ color: '#666', marginBottom: '1rem' }}>{error}</p>
@@ -118,14 +124,14 @@ function Reports() {
           alignItems: 'center',
           justifyContent: 'space-between',
         }}
-      >
-        <div>
+       className="page-header">
+        <div className="">
           <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1a1a2e', marginBottom: '0.5rem' }}>
             التقارير
           </h1>
           <p style={{ color: '#666', margin: 0 }}>إحصائيات وتقارير شاملة</p>
         </div>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem' }} className="row-actions page-actions">
           <button onClick={handleExportCSV} className="btn btn-secondary">
             <span>📥</span>
             <span>تصدير CSV</span>
@@ -140,7 +146,7 @@ function Reports() {
       {/* Filters */}
       <div className="card" style={{ marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '1.125rem', fontWeight: '600', marginBottom: '1rem' }}>تصفية التقارير</h2>
-        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }} className="filters-grid">
           <div style={{ flex: 1, minWidth: '200px' }}>
             <label className="form-label">من تاريخ</label>
             <input
@@ -200,7 +206,7 @@ function Reports() {
           gap: '1.5rem',
           marginBottom: '2rem',
         }}
-      >
+       className="responsive-grid stats-grid">
         <div
           className="card"
           style={{
@@ -251,7 +257,7 @@ function Reports() {
             {summary?.total_pilgrims || 0}
           </p>
         </div>
-        <div
+        {isAdmin && (<div
           className="card"
           style={{
             display: 'flex',
@@ -275,8 +281,8 @@ function Reports() {
           >
             ${summary?.total_received?.toFixed(2) || 0}
           </p>
-        </div>
-        <div
+        </div>)}
+        {isAdmin && (<div
           className="card"
           style={{
             display: 'flex',
@@ -300,8 +306,8 @@ function Reports() {
           >
             ${summary?.total_trip_cost?.toFixed(2) || 0}
           </p>
-        </div>
-        <div
+        </div>)}
+        {isAdmin && (<div
           className="card"
           style={{
             display: 'flex',
@@ -312,7 +318,7 @@ function Reports() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <span style={{ fontSize: '2rem' }}>📉</span>
             <h3 style={{ fontSize: '0.875rem', color: '#666', margin: 0, fontWeight: '600' }}>
-              إجمالي غير المقبوض
+              الرصيد المستحق على المعتمرين
             </h3>
           </div>
           <p
@@ -323,10 +329,10 @@ function Reports() {
               margin: 0,
             }}
           >
-            ${summary?.total_outstanding?.toFixed(2) || 0}
+            غير متاح دون سعر مستقل لكل معتمر
           </p>
-        </div>
-        <div
+        </div>)}
+        {isAdmin && (<div
           className="card"
           style={{
             display: 'flex',
@@ -337,7 +343,7 @@ function Reports() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <span style={{ fontSize: '2rem' }}>📊</span>
             <h3 style={{ fontSize: '0.875rem', color: '#666', margin: 0, fontWeight: '600' }}>
-              صافي الإجمالي
+              صافي الرحلات (المقبوض ناقص التكلفة)
             </h3>
           </div>
           <p
@@ -350,8 +356,8 @@ function Reports() {
           >
             ${summary?.net_total?.toFixed(2) || 0}
           </p>
-        </div>
-        <div
+        </div>)}
+        {isAdmin && (<div
           className="card"
           style={{
             display: 'flex',
@@ -362,7 +368,7 @@ function Reports() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <span style={{ fontSize: '2rem' }}>✅</span>
             <h3 style={{ fontSize: '0.875rem', color: '#666', margin: 0, fontWeight: '600' }}>
-              مدفوع
+              لديهم دفعات مسجلة
             </h3>
           </div>
           <p
@@ -375,8 +381,8 @@ function Reports() {
           >
             {summary?.with_payments || 0}
           </p>
-        </div>
-        <div
+        </div>)}
+        {isAdmin && (<div
           className="card"
           style={{
             display: 'flex',
@@ -387,7 +393,7 @@ function Reports() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <span style={{ fontSize: '2rem' }}>❌</span>
             <h3 style={{ fontSize: '0.875rem', color: '#666', margin: 0, fontWeight: '600' }}>
-              غير مدفوع
+              بلا دفعات مسجلة
             </h3>
           </div>
           <p
@@ -400,8 +406,8 @@ function Reports() {
           >
             {summary?.without_payments || 0}
           </p>
-        </div>
-        <div
+        </div>)}
+        {isAdmin && (<div
           className="card"
           style={{
             display: 'flex',
@@ -425,8 +431,8 @@ function Reports() {
           >
             ${summary?.cash_total?.toFixed(2) || 0}
           </p>
-        </div>
-        <div
+        </div>)}
+        {isAdmin && (<div
           className="card"
           style={{
             display: 'flex',
@@ -450,7 +456,7 @@ function Reports() {
           >
             ${summary?.sham_cash_total?.toFixed(2) || 0}
           </p>
-        </div>
+        </div>)}
       </div>
 
       {/* Nationalities Chart */}
@@ -459,7 +465,7 @@ function Reports() {
           توزيع المعتمرين حسب الجنسية
         </h2>
         <div className="table-container">
-          <table className="table">
+          <table className="table responsive-table">
             <thead>
               <tr>
                 <th>الجنسية</th>
@@ -474,10 +480,10 @@ function Reports() {
                   : 0;
                 return (
                   <tr key={nat.nationality}>
-                    <td style={{ fontWeight: '600' }}>{nat.nationality}</td>
-                    <td>{nat.count}</td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <td style={{ fontWeight: '600' }} data-label="الجنسية"><div className="cell-value">{nat.nationality}</div></td>
+                    <td data-label="العدد"><div className="cell-value">{nat.count}</div></td>
+                    <td data-label="النسبة المئوية"><div className="cell-value">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }} className="filters-grid">
                         <div
                           style={{
                             flex: 1,
@@ -498,10 +504,48 @@ function Reports() {
                         </div>
                         <span style={{ minWidth: '50px', textAlign: 'left' }}>{percentage}%</span>
                       </div>
-                    </td>
+                    </div></td>
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: '1.5rem' }}>
+        <h2 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '1.5rem' }}>
+          {isAdmin ? 'الملخص المالي حسب الرحلة' : 'ملخص الرحلات'}
+        </h2>
+        <div className="table-container">
+          <table className="table responsive-table">
+            <thead>
+              <tr>
+                <th>الرحلة</th>
+                <th>التاريخ</th>
+                <th>المعتمرون</th>
+                {isAdmin && (<th>تكلفة الرحلة</th>)}
+                {isAdmin && (<th>المقبوض</th>)}
+                {isAdmin && (<th>الصافي</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {tripFinancials.length ? tripFinancials.map((trip) => (
+                <tr key={trip.id}>
+                  <td data-label="الرحلة"><div className="cell-value">{trip.name}</div></td>
+                  <td data-label="التاريخ"><div className="cell-value">{new Date(`${String(trip.trip_date).slice(0, 10)}T00:00:00`).toLocaleDateString('ar-SA')}</div></td>
+                  <td data-label="المعتمرون"><div className="cell-value">{trip.pilgrim_count}</div></td>
+                  {isAdmin && (<td data-label="تكلفة الرحلة"><div className="cell-value">${trip.trip_cost_usd.toFixed(2)}</div></td>)}
+                  {isAdmin && (<td data-label="المقبوض"><div className="cell-value">${trip.total_received.toFixed(2)}</div></td>)}
+                  {isAdmin && (<td data-label="الصافي"><div className="cell-value">${trip.net_trip.toFixed(2)}</div></td>)}
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan={isAdmin ? 6 : 3} style={{ textAlign: 'center', padding: '2rem' }}>
+                    لا توجد رحلات مطابقة للمرشحات
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

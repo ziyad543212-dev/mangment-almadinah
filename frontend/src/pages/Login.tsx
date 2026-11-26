@@ -1,10 +1,13 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { authService } from '../services/auth';
 import { useTheme } from '../contexts/ThemeContext';
 import LogoPng from '/Logo.png';
+import { endPreview, mobileShell, setOffline, startPreview, useOffline } from '../services/offline';
+import api from '../services/api';
 
 function Login() {
+  useOffline();
   const { theme, toggleTheme } = useTheme();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -25,12 +28,16 @@ function Login() {
     }
 
     try {
-      const response = await authService.login(username, password);
-      localStorage.setItem('token', response.token);
-      authService.setUser(response.user);
+      if (mobileShell) {
+        endPreview();
+        const health = await api.get('/api/health');
+        if (health.data?.status !== 'ok') throw new Error('تعذر الاتصال');
+        setOffline(false);
+      }
+      await authService.login(username, password);
       navigate('/dashboard');
     } catch (err: any) {
-      setError(err.response?.data?.error || 'حدث خطأ أثناء تسجيل الدخول');
+      setError(err.response?.data?.error || (mobileShell ? 'تعذر الاتصال بالبرنامج. يمكنك فتح الواجهات دون اتصال أو المحاولة لاحقًا.' : 'حدث خطأ أثناء تسجيل الدخول'));
     } finally {
       setLoading(false);
     }
@@ -48,14 +55,14 @@ function Login() {
       }}
     >
       <div
-        className="card"
+        className="card page-header auth-card"
         style={{
           maxWidth: '400px',
           width: '100%',
           background: 'var(--bg-primary)',
         }}
       >
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+        <div style={{ textAlign: 'center', marginBottom: '2rem' }} className="">
           <img
             src={LogoPng}
             alt="شركة المدينة للحج والعمرة"
@@ -159,12 +166,17 @@ function Login() {
           </button>
         </form>
 
+        {mobileShell && <div style={{ marginTop: '1rem' }}>
+          <button className="btn btn-secondary" style={{ width: '100%' }} onClick={() => { startPreview(); navigate('/dashboard'); }}>فتح الواجهات دون اتصال</button>
+          <p style={{ marginTop: '0.75rem', fontSize: '0.85rem' }}>تسجيل الدخول والحفظ يحتاجان اتصالًا بالخادم. يمكنك فتح الواجهات وتغيير المظهر دون اتصال.</p>
+        </div>}
+
         <div style={{ marginTop: '1.5rem', textAlign: 'center', fontSize: '0.75rem', color: '#999' }}>
-          <p>للحصول على معلومات الدخول،请联系 المسؤول</p>
+          <p>للحصول على معلومات الدخول، تواصل مع المسؤول</p>
           <div style={{ marginTop: '0.5rem' }}>
-            <a href="/setup" style={{ color: '#D4AF37', textDecoration: 'none', fontSize: '0.875rem' }}>
+            <Link to="/setup" style={{ color: '#D4AF37', textDecoration: 'none', fontSize: '0.875rem' }}>
               إنشاء مستخدم مسؤول
-            </a>
+            </Link>
           </div>
         </div>
 

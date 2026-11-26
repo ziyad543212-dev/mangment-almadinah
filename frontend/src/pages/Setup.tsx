@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../services/api';
 
 function Setup() {
@@ -23,8 +24,8 @@ function Setup() {
       return;
     }
 
-    if (formData.password.length < 6) {
-      setError('كلمة المرور يجب أن تكون 6 أحرف على الأقل');
+    if (formData.password.length < 12 || formData.password.length > 128) {
+      setError('كلمة المرور يجب أن تكون بين 12 و128 حرفاً');
       setLoading(false);
       return;
     }
@@ -66,6 +67,7 @@ function Setup() {
               value={formData.username}
               onChange={(e) => setFormData({ ...formData, username: e.target.value })}
               required
+              maxLength={80}
               disabled={loading}
             />
           </div>
@@ -79,6 +81,8 @@ function Setup() {
               onChange={(e) => setFormData({ ...formData, password: e.target.value })}
               required
               disabled={loading}
+              minLength={12}
+              maxLength={128}
             />
           </div>
 
@@ -91,6 +95,8 @@ function Setup() {
               onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
               required
               disabled={loading}
+              minLength={12}
+              maxLength={128}
             />
           </div>
 
@@ -100,9 +106,9 @@ function Setup() {
         </form>
 
         <div style={{ marginTop: '2rem', textAlign: 'center' }}>
-          <a href="/login" style={{ color: '#D4AF37', textDecoration: 'none' }}>
+          <Link to="/login" style={{ color: '#D4AF37', textDecoration: 'none' }}>
             الذهاب لتسجيل الدخول ←
-          </a>
+          </Link>
         </div>
       </div>
     </div>

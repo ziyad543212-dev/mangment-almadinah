@@ -3,6 +3,9 @@ dist
 .env
 .env.local
 .env.production
+**/.env
+**/.env.local
+**/.env.production
 *.sqlite
 .DS_Store
 Thumbs.db
@@ -16,3 +19,11 @@ start-app.bat
 node_modules/
 backend/node_modules/
 frontend/node_modules/
+backend/src/ocr-service/.venv/
+backend/src/ocr-service/.python-runtime/
+backend/src/ocr-service/__pycache__/
+backend/uploads/
+runtime/
+backend/__pycache__/
+backend/tmp/
+backend/ocr-evaluation/

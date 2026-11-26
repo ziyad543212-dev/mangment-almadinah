@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "start": "vite preview",
+    "start": "npm run build && vite preview",
     "lint": "oxlint",
+    "test:mobile": "playwright test",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -18,6 +19,7 @@
     "react-router-dom": "^7.18.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",

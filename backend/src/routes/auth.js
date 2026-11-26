@@ -1,31 +1,70 @@
 const express = require('express');
 const router = express.Router();
-const { authenticateToken, hashPassword, comparePassword, generateToken } = require('../auth');
-const { queryGet, queryRun } = require('./helpers');
+const { authenticateToken, requireAdmin, hashPassword, comparePassword, generateToken } = require('../auth');
+const { query, queryGet, queryRun } = require('./helpers');
 
-router.post('/login', async (req, res) => {
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 8;
+const failedLoginAttempts = new Map();
+
+function getLoginAttemptKey(req) {
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
+function isLoginRateLimited(req, res, next) {
+  const key = getLoginAttemptKey(req);
+  const now = Date.now();
+  const attempts = failedLoginAttempts.get(key);
+  if (attempts && now - attempts.firstAttemptAt < LOGIN_WINDOW_MS &&
+      attempts.count >= LOGIN_MAX_ATTEMPTS) {
+    return res.status(429).json({ error: 'محاولات تسجيل الدخول كثيرة. يرجى الانتظار 15 دقيقة.' });
+  }
+  if (attempts && now - attempts.firstAttemptAt >= LOGIN_WINDOW_MS) {
+    failedLoginAttempts.delete(key);
+  }
+  next();
+}
+
+function recordFailedLogin(req) {
+  const now = Date.now();
+  const key = getLoginAttemptKey(req);
+  const current = failedLoginAttempts.get(key);
+  if (!current || now - current.firstAttemptAt >= LOGIN_WINDOW_MS) {
+    if (failedLoginAttempts.size >= 10_000) {
+      const oldestKey = failedLoginAttempts.keys().next().value;
+      if (oldestKey !== undefined) failedLoginAttempts.delete(oldestKey);
+    }
+    failedLoginAttempts.set(key, { firstAttemptAt: now, count: 1 });
+  } else {
+    current.count += 1;
+  }
+}
+
+router.post('/login', isLoginRateLimited, async (req, res) => {
   try {
-    console.log('=== Login Attempt ===');
     const { username, password } = req.body;
 
-    if (!username || !password) {
+    if (typeof username !== 'string' || typeof password !== 'string' ||
+        !username.trim() || !password || username.length > 80 || password.length > 128) {
       return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
     }
 
-    const user = await queryGet('SELECT * FROM users WHERE username = ?', [username]);
+    const user = await queryGet('SELECT id, username, password_hash, role FROM users WHERE username = ?', [username.trim()]);
 
     if (!user) {
+      recordFailedLogin(req);
       return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
     }
 
     const passwordMatch = comparePassword(password, user.password_hash);
 
     if (!passwordMatch) {
+      recordFailedLogin(req);
       return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
     }
 
+    failedLoginAttempts.delete(getLoginAttemptKey(req));
     const token = generateToken(user);
-    
     res.json({
       token,
       user: {
@@ -35,7 +74,7 @@ router.post('/login', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Login error details:', error);
+    console.error('Login failed due to a server error:', error.message);
     res.status(500).json({ error: 'خطأ في الخادم' });
   }
 });
@@ -44,35 +83,76 @@ router.post('/setup-admin', async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    if (!username || !password) {
+    if (typeof username !== 'string' || typeof password !== 'string' ||
+        !username.trim() || username.trim().length > 80 || password.length > 128) {
       return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
     }
-
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
-    }
-
-    const users = await queryGet('SELECT COUNT(*) AS count FROM users');
-    if (parseInt(users.count) > 0) {
-      return res.status(409).json({ error: 'تم إعداد حساب المسؤول مسبقاً' });
+    if (password.length < 12) {
+      return res.status(400).json({ error: 'كلمة المرور يجب ألا تقل عن 12 حرفاً' });
     }
 
     const passwordHash = hashPassword(password);
+    const result = await require('../database').transaction(async ({ query }) => {
+      await query('SELECT pg_advisory_xact_lock(?)', [834756214]);
+      const users = await query('SELECT COUNT(*)::integer AS count FROM users');
+      if (users.rows[0].count > 0) {
+        const error = new Error('تم إعداد حساب المسؤول مسبقاً');
+        error.statusCode = 409;
+        throw error;
+      }
+      return query(
+        'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?) RETURNING id',
+        [username.trim(), passwordHash, 'admin']
+      );
+    });
 
-    const result = await queryRun(
-      'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-      [username, passwordHash, 'admin']
-    );
-
-    res.json({ message: 'تم إنشاء حساب المسؤول بنجاح', userId: result.lastID });
-  } catch (err) {
-    console.error('Setup admin error:', err);
+    res.status(201).json({ message: 'تم إنشاء حساب المسؤول بنجاح', userId: result.rows[0].id });
+  } catch (error) {
+    if (error.statusCode === 409) {
+      return res.status(409).json({ error: error.message });
+    }
+    console.error('Admin setup failed:', error.message);
     res.status(500).json({ error: 'خطأ في الخادم' });
   }
 });
 
 router.get('/verify', authenticateToken, (req, res) => {
   res.json({ user: req.user });
+});
+
+router.get('/employees', authenticateToken, requireAdmin, async (_req, res) => {
+  try {
+    const employees = await query(
+      "SELECT id, username, role, created_at FROM users WHERE role = 'employee' ORDER BY created_at DESC, id DESC"
+    );
+    res.json({ employees });
+  } catch (error) {
+    console.error('Employee list failed:', error.code || error.name);
+    res.status(500).json({ error: 'تعذر تحميل حسابات الموظفين' });
+  }
+});
+
+router.post('/employees', authenticateToken, requireAdmin, async (req, res) => {
+  const { username, password, confirmPassword } = req.body;
+  if (typeof username !== 'string' || !username.trim() || username.trim().length > 80 ||
+      typeof password !== 'string' || password.length < 12 || password.length > 128) {
+    return res.status(400).json({ error: 'أدخل اسم مستخدم وكلمة مرور بين 12 و128 حرفاً' });
+  }
+  if (password !== confirmPassword) {
+    return res.status(400).json({ error: 'تأكيد كلمة المرور غير مطابق' });
+  }
+  try {
+    // The role is always assigned here; callers cannot create another administrator.
+    const result = await queryRun(
+      'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?) RETURNING id',
+      [username.trim(), hashPassword(password), 'employee']
+    );
+    res.status(201).json({ user: { id: result.lastID, username: username.trim(), role: 'employee' } });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'اسم المستخدم مستخدم مسبقاً' });
+    console.error('Employee creation failed:', error.code || error.name);
+    res.status(500).json({ error: 'تعذر إنشاء حساب الموظف' });
+  }
 });
 
 router.post('/change-password', authenticateToken, async (req, res) => {
@@ -87,8 +167,8 @@ router.post('/change-password', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'كلمة المرور الجديدة غير متطابقة مع التأكيد' });
     }
 
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل' });
+    if (newPassword.length < 12 || newPassword.length > 128) {
+      return res.status(400).json({ error: 'كلمة المرور الجديدة يجب أن تكون بين 12 و128 حرفاً' });
     }
 
     const user = await queryGet('SELECT * FROM users WHERE id = ?', [req.user.id]);

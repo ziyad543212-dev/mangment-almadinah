@@ -1,9 +1,13 @@
+import { authService } from '../services/auth';
+import Modal from '../components/Modal';
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import api from '../services/api';
 import type { Trip } from '../types';
 
 function Trips() {
+  const isAdmin = authService.isAdmin();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [trips, setTrips] = useState<Trip[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -11,7 +15,7 @@ function Trips() {
   const [endDate, setEndDate] = useState('');
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [showModal, setShowModal] = useState(false);
+  const [showModal, setShowModal] = useState(() => searchParams.get('action') === 'add');
   const [editingTrip, setEditingTrip] = useState<Trip | null>(null);
   const [formData, setFormData] = useState({
     name: '',
@@ -21,6 +25,13 @@ function Trips() {
   });
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (searchParams.get('action') !== 'add') return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('action');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     fetchTrips();
@@ -88,7 +99,7 @@ function Trips() {
   };
 
   const handleDelete = async (id: number) => {
-    if (!confirm('هل أنت متأكد من حذف هذه الرحلة؟ سيتم حذف جميع المعتمرين والدفعات المرتبطة بها.')) {
+    if (!confirm(isAdmin ? 'هل أنت متأكد من حذف هذه الرحلة؟ سيتم حذف جميع المعتمرين والدفعات المرتبطة بها.' : 'هل أنت متأكد من حذف الرحلة والمعتمرين المرتبطين بها؟')) {
       return;
     }
 
@@ -123,8 +134,8 @@ function Trips() {
           flexWrap: 'wrap',
           gap: '1rem',
         }}
-      >
-        <div>
+       className="page-header row-actions">
+        <div className="">
           <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1a1a2e', marginBottom: '0.5rem' }}>
             الرحلات
           </h1>
@@ -150,7 +161,7 @@ function Trips() {
 
       {/* Filters */}
       <div className="card" style={{ marginBottom: '1.5rem' }}>
-        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }} className="filters-grid">
           <div style={{ flex: 1, minWidth: '200px' }}>
             <input
               type="text"
@@ -164,7 +175,9 @@ function Trips() {
             />
           </div>
           <div style={{ minWidth: '150px' }}>
+            <label className="form-label" htmlFor="trip-date-from">من تاريخ</label>
             <input
+              id="trip-date-from"
               type="date"
               className="form-input"
               placeholder="من تاريخ"
@@ -176,7 +189,9 @@ function Trips() {
             />
           </div>
           <div style={{ minWidth: '150px' }}>
+            <label className="form-label" htmlFor="trip-date-to">إلى تاريخ</label>
             <input
+              id="trip-date-to"
               type="date"
               className="form-input"
               placeholder="إلى تاريخ"
@@ -193,23 +208,23 @@ function Trips() {
       {/* Table */}
       <div className="card" style={{ padding: 0 }}>
         <div className="table-container">
-          <table className="table">
+          <table className="table responsive-table">
             <thead>
               <tr>
                 <th>اسم الرحلة</th>
                 <th>تاريخ الرحلة</th>
                 <th>عدد المعتمرين</th>
-                <th>تكلفة الرحلة</th>
-                <th>إجمالي المقبوض</th>
-                <th>غير المقبوض</th>
-                <th>صافي الرحلة</th>
+                {isAdmin && (<th>تكلفة الرحلة</th>)}
+                {isAdmin && (<th>إجمالي المقبوض</th>)}
+                {isAdmin && (<th>الصافي (المقبوض − تكلفة الرحلة)</th>)}
+                {isAdmin && (<th>صافي الرحلة</th>)}
                 <th>الإجراءات</th>
               </tr>
             </thead>
             <tbody>
               {trips.length === 0 ? (
                 <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: '3rem' }}>
+                  <td colSpan={isAdmin ? 8 : 4} style={{ textAlign: 'center', padding: '3rem' }}>
                     <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📭</div>
                     <p style={{ color: '#666', marginBottom: '1rem' }}>لا توجد رحلات حاليًا</p>
                     <button
@@ -232,7 +247,7 @@ function Trips() {
               ) : (
                 trips.map((trip) => (
                   <tr key={trip.id}>
-                    <td>
+                    <td data-label="اسم الرحلة"><div className="cell-value">
                       <Link
                         to={`/trips/${trip.id}`}
                         style={{
@@ -243,23 +258,23 @@ function Trips() {
                       >
                         {trip.name}
                       </Link>
-                    </td>
-                    <td>{new Date(trip.trip_date).toLocaleDateString('ar-SA')}</td>
-                    <td>{trip.pilgrim_count || 0}</td>
-                    <td style={{ fontWeight: '600', color: '#D4AF37' }}>
+                    </div></td>
+                    <td data-label="تاريخ الرحلة"><div className="cell-value">{new Date(trip.trip_date).toLocaleDateString('ar-SA')}</div></td>
+                    <td data-label="عدد المعتمرين"><div className="cell-value">{trip.pilgrim_count || 0}</div></td>
+                    {isAdmin && (<td style={{ fontWeight: '600', color: '#D4AF37' }} data-label="تكلفة الرحلة"><div className="cell-value">
                       ${trip.trip_cost_usd?.toFixed(2) || 0}
-                    </td>
-                    <td style={{ fontWeight: '600', color: '#28a745' }}>
+                    </div></td>)}
+                    {isAdmin && (<td style={{ fontWeight: '600', color: '#28a745' }} data-label="إجمالي المقبوض"><div className="cell-value">
                       ${trip.total_received?.toFixed(2) || 0}
-                    </td>
-                    <td style={{ fontWeight: '600', color: '#dc3545' }}>
-                      ${trip.total_outstanding?.toFixed(2) || 0}
-                    </td>
-                    <td style={{ fontWeight: '600', color: (trip.net_trip ?? 0) >= 0 ? '#17a2b8' : '#dc3545' }}>
+                    </div></td>)}
+                    {isAdmin && (<td style={{ fontWeight: '600', color: '#dc3545' }} data-label="الصافي (المقبوض − تكلفة الرحلة)"><div className="cell-value">
+                      ${trip.net_trip?.toFixed(2) || 0}
+                    </div></td>)}
+                    {isAdmin && (<td style={{ fontWeight: '600', color: (trip.net_trip ?? 0) >= 0 ? '#17a2b8' : '#dc3545' }} data-label="صافي الرحلة"><div className="cell-value">
                       ${(trip.net_trip ?? 0)?.toFixed(2) || 0}
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    </div></td>)}
+                    <td data-label="الإجراءات"><div className="cell-value">
+                      <div style={{ display: 'flex', gap: '0.5rem' }} className="row-actions">
                         <Link
                           to={`/trips/${trip.id}`}
                           className="btn btn-sm btn-secondary"
@@ -285,7 +300,7 @@ function Trips() {
                           )}
                         </button>
                       </div>
-                    </td>
+                    </div></td>
                   </tr>
                 ))
               )}
@@ -304,7 +319,7 @@ function Trips() {
               padding: '1rem',
               borderTop: '1px solid var(--border-color)',
             }}
-          >
+           className="row-actions pagination">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1}
@@ -328,26 +343,10 @@ function Trips() {
 
       {/* Modal */}
       {showModal && (
-        <div className="modal-overlay" onClick={() => !saving && setShowModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2 className="modal-title">
+        <Modal title={<>
                 {editingTrip ? 'تعديل الرحلة' : 'إضافة رحلة جديدة'}
-              </h2>
-              <button
-                onClick={() => !saving && setShowModal(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '1.5rem',
-                  cursor: 'pointer',
-                  color: '#666',
-                }}
-                disabled={saving}
-              >
-                ✕
-              </button>
-            </div>
+              </>} onClose={() => !saving && setShowModal(false)} busy={saving} maxWidth="600px">
+
             <form onSubmit={handleSubmit}>
               <div className="modal-body">
                 <div className="form-group">
@@ -372,7 +371,7 @@ function Trips() {
                     disabled={saving}
                   />
                 </div>
-                <div className="form-group">
+                {isAdmin && (<div className="form-group">
                   <label className="form-label">تكلفة الرحلة ($)</label>
                   <input
                     type="number"
@@ -383,7 +382,7 @@ function Trips() {
                     onChange={(e) => setFormData({ ...formData, trip_cost_usd: e.target.value })}
                     disabled={saving}
                   />
-                </div>
+                </div>)}
                 <div className="form-group">
                   <label className="form-label">ملاحظات</label>
                   <textarea
@@ -415,8 +414,7 @@ function Trips() {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
+          </Modal>
       )}
     </div>
   );

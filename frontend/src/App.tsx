@@ -34,7 +34,7 @@ function App() {
             <Route path="trips/:id" element={<TripDetails />} />
             <Route path="trips/:tripId/manifest" element={<PassengerManifest />} />
             <Route path="pilgrims/:id" element={<PilgrimDetail />} />
-            <Route path="payments" element={<Payments />} />
+            <Route path="payments" element={<ProtectedRoute adminOnly><Payments /></ProtectedRoute>} />
             <Route path="reports" element={<Reports />} />
             <Route path="settings" element={<Settings />} />
           </Route>

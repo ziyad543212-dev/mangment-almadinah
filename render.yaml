@@ -19,7 +19,21 @@ services:
         value: admin
       - key: INITIAL_ADMIN_PASSWORD
         generateValue: true
-      - key: DATA_DIR
-        value: /var/data
+      - key: DATABASE_URL
+        fromDatabase:
+          name: almadinah-postgres
+          property: connectionString
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
       - key: ALLOWED_ORIGINS
-        value: http://localhost:5173,http://localhost:3000
+        sync: false
+      - key: ALLOW_DATABASE_RESTORE
+        value: "false"
+
+databases:
+  - name: almadinah-postgres
+    databaseName: mangment_almadinah
+    user: almadinah_app
+    plan: basic-1gb
+    region: frankfurt
+    postgresMajorVersion: "16"

@@ -55,8 +55,8 @@ function Payments() {
           alignItems: 'center',
           justifyContent: 'space-between',
         }}
-      >
-        <div>
+       className="page-header">
+        <div className="">
           <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1a1a2e', marginBottom: '0.5rem' }}>
             الدفعات
           </h1>
@@ -72,7 +72,7 @@ function Payments() {
           gap: '1.5rem',
           marginBottom: '2rem',
         }}
-      >
+       className="responsive-grid stats-grid">
         <div
           className="card"
           style={{
@@ -167,7 +167,7 @@ function Payments() {
       {/* Table */}
       <div className="card" style={{ padding: 0 }}>
         <div className="table-container">
-          <table className="table">
+          <table className="table responsive-table">
             <thead>
               <tr>
                 <th>الاسم</th>
@@ -189,18 +189,18 @@ function Payments() {
               ) : (
                 payments.map((payment) => (
                   <tr key={payment.id}>
-                    <td style={{ fontWeight: '600' }}>
+                    <td style={{ fontWeight: '600' }} data-label="الاسم"><div className="cell-value">
                       {[payment.first_name_ar, payment.father_name_ar, payment.last_name_ar].filter(Boolean).join(' ') ||
                         [payment.first_name_en, payment.father_name_en, payment.last_name_en].filter(Boolean).join(' ') ||
                         '-'}
-                    </td>
-                    <td>{payment.trip_name}</td>
-                    <td style={{ fontWeight: '600', color: '#28a745' }}>
+                    </div></td>
+                    <td data-label="الرحلة"><div className="cell-value">{payment.trip_name}</div></td>
+                    <td style={{ fontWeight: '600', color: '#28a745' }} data-label="المبلغ"><div className="cell-value">
                       ${payment.amount_usd.toFixed(2)}
-                    </td>
-                    <td>{payment.payment_method}</td>
-                    <td>{new Date(payment.payment_date).toLocaleDateString('ar-SA')}</td>
-                    <td>{payment.notes || '-'}</td>
+                    </div></td>
+                    <td data-label="طريقة الدفع"><div className="cell-value">{payment.payment_method}</div></td>
+                    <td data-label="تاريخ الدفع"><div className="cell-value">{new Date(payment.payment_date).toLocaleDateString('ar-SA')}</div></td>
+                    <td data-label="الملاحظات"><div className="cell-value">{payment.notes || '-'}</div></td>
                   </tr>
                 ))
               )}
@@ -219,7 +219,7 @@ function Payments() {
               padding: '1rem',
               borderTop: '1px solid var(--border-color)',
             }}
-          >
+           className="row-actions pagination">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1}

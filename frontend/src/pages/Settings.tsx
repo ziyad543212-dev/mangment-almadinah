@@ -1,15 +1,8 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import api from '../services/api';
 import { useTheme } from '../contexts/ThemeContext';
-
-declare global {
-  interface Window {
-    electronAPI?: {
-      showSaveDialog: (options: any) => Promise<any>;
-      showOpenDialog: (options: any) => Promise<any>;
-    };
-  }
-}
+import { authService } from '../services/auth';
+import EmployeeAccounts from '../components/EmployeeAccounts';
 
 function Settings() {
   const { theme, toggleTheme } = useTheme();
@@ -21,6 +14,7 @@ function Settings() {
   const [loading, setLoading] = useState(false);
   const [backupLoading, setBackupLoading] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
+  const restoreInput = useRef<HTMLInputElement>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,114 +38,48 @@ function Settings() {
   const handleBackup = async () => {
     setBackupLoading(true);
     try {
-      // Try to use Electron dialog if available
-      let filePath: string | null = null;
-      if (window.electronAPI) {
-        const result = await window.electronAPI.showSaveDialog({
-          title: 'Save Database Backup',
-          defaultPath: `backup_${new Date().toISOString().split('T')[0]}.sqlite`,
-          filters: [
-            { name: 'SQLite Database', extensions: ['sqlite', 'db'] },
-            { name: 'All Files', extensions: ['*'] }
-          ]
-        });
-        if (!result.canceled && result.filePath) {
-          filePath = result.filePath;
-        }
-      }
-
-      if (filePath) {
-        // For Electron: download to selected path
-        const response = await api.get('/api/backup/export', {
-          responseType: 'blob'
-        });
-        // Create download link
-        const url = window.URL.createObjectURL(new Blob([response.data]));
-        const link = document.createElement('a');
-        link.href = url;
-        link.setAttribute('download', filePath.split(/[/\\]/).pop() || 'backup.sqlite');
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.URL.revokeObjectURL(url);
-      } else {
-        // For web: direct download
-        const response = await api.get('/api/backup/export', {
-          responseType: 'blob'
-        });
-        const url = window.URL.createObjectURL(new Blob([response.data]));
-        const link = document.createElement('a');
-        link.href = url;
-        link.setAttribute('download', `backup_${new Date().toISOString().split('T')[0]}.sqlite`);
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.URL.revokeObjectURL(url);
-      }
-
+      const response = await api.get('/api/backup/export', { responseType: 'blob' });
+      const url = window.URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `almadinah-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
       alert('تم إنشاء نسخة احتياطية بنجاح');
     } catch (error: any) {
-      alert('حدث خطأ في إنشاء النسخة الاحتياطية');
+      alert(error.response?.data?.error || 'تعذر إنشاء النسخة الاحتياطية');
     } finally {
       setBackupLoading(false);
     }
   };
 
   const handleRestore = async () => {
-    if (!confirm('هل أنت متأكد من استعادة النسخة الاحتياطية؟ سيتم استبدال جميع البيانات الحالية.')) {
+    if (!confirm('ستُستبدل جميع بيانات التطبيق بالنسخة المختارة. لا تتابع قبل إنشاء نسخة احتياطية حديثة. هل تريد اختيار ملف الاستعادة؟')) {
       return;
     }
+    restoreInput.current?.click();
+  };
 
+  const handleRestoreFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
     setRestoreLoading(true);
     try {
-      let filePath: string | null = null;
-      if (window.electronAPI) {
-        const result = await window.electronAPI.showOpenDialog({
-          title: 'Select Database Backup',
-          filters: [
-            { name: 'SQLite Database', extensions: ['sqlite', 'db'] },
-            { name: 'All Files', extensions: ['*'] }
-          ],
-          properties: ['openFile']
-        });
-        if (!result.canceled && result.filePaths && result.filePaths.length > 0) {
-          filePath = result.filePaths[0];
-        }
+      if (!file.name.toLowerCase().endsWith('.json')) {
+        throw new Error('اختر ملف نسخة PostgreSQL بصيغة JSON');
       }
-
-      if (filePath) {
-        // For Electron: upload selected file
-        const formData = new FormData();
-        const file = new File([await (await fetch(`file://${filePath}`)).blob()], filePath.split(/[/\\]/).pop() || 'backup.sqlite');
-        formData.append('backup', file);
-
-        await api.post('/api/backup/restore', formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
-        });
-      } else {
-        // For web: use file input
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.sqlite,.db';
-        input.onchange = async (e: any) => {
-          const file = e.target.files[0];
-          if (file) {
-            const formData = new FormData();
-            formData.append('backup', file);
-            await api.post('/api/backup/restore', formData, {
-              headers: { 'Content-Type': 'multipart/form-data' }
-            });
-          }
-        };
-        input.click();
-        return;
-      }
-
-      alert('تم استعادة النسخة الاحتياطية بنجاح. يرجى إعادة تشغيل التطبيق.');
+      const formData = new FormData();
+      formData.append('backup', file);
+      formData.append('confirmRestore', 'RESTORE');
+      const response = await api.post('/api/backup/restore', formData);
+      alert(`${response.data.message} (${response.data.restoredRows} سجل)`);
     } catch (error: any) {
-      alert('حدث خطأ في استعادة النسخة الاحتياطية');
+      alert(error.response?.data?.error || error.message || 'تعذر استعادة النسخة الاحتياطية');
     } finally {
       setRestoreLoading(false);
+      event.target.value = '';
     }
   };
 
@@ -161,7 +89,7 @@ function Settings() {
         style={{
           marginBottom: '2rem',
         }}
-      >
+       className="">
         <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1a1a2e', marginBottom: '0.5rem' }}>
           الإعدادات
         </h1>
@@ -172,7 +100,7 @@ function Settings() {
         <h2 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '1.5rem' }}>
           المظهر
         </h2>
-        <div style={{ display: 'flex', gap: '1rem' }}>
+        <div style={{ display: 'flex', gap: '1rem' }} className="row-actions theme-options">
           <button
             onClick={() => theme !== 'light' && toggleTheme()}
             className="btn"
@@ -204,7 +132,9 @@ function Settings() {
         </div>
       </div>
 
-      <div className="card" style={{ maxWidth: '600px' }}>
+      {authService.isAdmin() && <EmployeeAccounts />}
+
+      <div className="card" style={{ maxWidth: '600px', marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '1.5rem' }}>
           تغيير كلمة المرور
         </h2>
@@ -229,7 +159,8 @@ function Settings() {
               onChange={(e) => setPasswordData({ ...passwordData, newPassword: e.target.value })}
               required
               disabled={loading}
-              minLength={6}
+              minLength={12}
+              maxLength={128}
             />
           </div>
           <div className="form-group">
@@ -241,7 +172,8 @@ function Settings() {
               onChange={(e) => setPasswordData({ ...passwordData, confirmPassword: e.target.value })}
               required
               disabled={loading}
-              minLength={6}
+              minLength={12}
+              maxLength={128}
             />
           </div>
           <button type="submit" className="btn btn-primary" disabled={loading}>
@@ -257,11 +189,18 @@ function Settings() {
         </form>
       </div>
 
-      <div className="card" style={{ maxWidth: '600px' }}>
+      {authService.isAdmin() && <div className="card" style={{ maxWidth: '600px' }}>
         <h2 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '1.5rem' }}>
           النسخ الاحتياطي والاستعادة
         </h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }} className="row-actions">
+          <input
+            ref={restoreInput}
+            type="file"
+            accept=".json,application/json"
+            onChange={handleRestoreFile}
+            hidden
+          />
           <button
             onClick={handleBackup}
             className="btn btn-primary"
@@ -299,10 +238,10 @@ function Settings() {
             )}
           </button>
           <p style={{ fontSize: '0.875rem', color: '#666', marginTop: '0.5rem' }}>
-            تنبيه: استعادة النسخة الاحتياطية ستحذف جميع البيانات الحالية واستبدالها بالبيانات من النسخة الاحتياطية.
+            احتفظ بنسخة حديثة قبل استعادة البيانات. الاستعادة تستبدل جميع بيانات البرنامج بالنسخة المختارة.
           </p>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

@@ -1,8 +1,11 @@
+import { authService } from '../services/auth';
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../services/api';
 import type { DashboardStats } from '../types';
 
 function Dashboard() {
+  const isAdmin = authService.isAdmin();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -68,8 +71,8 @@ function Dashboard() {
           alignItems: 'center',
           justifyContent: 'space-between',
         }}
-      >
-        <div>
+       className="page-header">
+        <div className="">
           <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1a1a2e', marginBottom: '0.5rem' }}>
             لوحة التحكم
           </h1>
@@ -85,44 +88,44 @@ function Dashboard() {
           gap: '1.5rem',
           marginBottom: '2rem',
         }}
-      >
-        <StatCard title="إجمالي الرحلات" value={stats?.totalTrips || 0} icon="✈️" color="#D4AF37" />
-        <StatCard title="إجمالي المعتمرين" value={stats?.totalPilgrims || 0} icon="�" color="#D4AF37" />
-        <StatCard title="إجمالي المقبوض بالدولار" value={`$${stats?.totalReceived?.toFixed(2) || 0}`} icon="💰" color="#28a745" />
-        <StatCard title="الرحلات القادمة" value={stats?.upcomingTrips || 0} icon="📅" color="#17a2b8" />
-        <StatCard title="مدفوع بالكامل" value={stats?.fullyPaid || 0} icon="✅" color="#28a745" />
-        <StatCard title="مدفوع جزئيًا" value={stats?.partiallyPaid || 0} icon="⚠️" color="#ffc107" />
-        <StatCard title="غير مدفوع" value={stats?.unpaid || 0} icon="❌" color="#dc3545" />
+       className="responsive-grid stats-grid">
+        <StatCard title="إجمالي الرحلات" value={stats?.totalTrips ?? '—'} icon="✈️" color="#D4AF37" />
+        <StatCard title="إجمالي المعتمرين" value={stats?.totalPilgrims ?? '—'} icon="👥" color="#D4AF37" />
+        {isAdmin && (<StatCard title="إجمالي المقبوض بالدولار" value={`$${stats?.totalReceived?.toFixed(2) || 0}`} icon="💰" color="#28a745" />)}
+        <StatCard title="الرحلات القادمة" value={stats?.upcomingTrips ?? '—'} icon="📅" color="#17a2b8" />
+        {isAdmin && (<StatCard title="معتمرون لديهم دفعات مسجلة" value={stats?.pilgrimsWithPayments || 0} icon="✅" color="#28a745" />)}
+        {isAdmin && (<StatCard title="معتمرون بلا دفعات مسجلة" value={stats?.pilgrimsWithoutPayments || 0} icon="❌" color="#dc3545" />)}
+        {isAdmin && (<StatCard title="تكاليف الرحلات" value={`$${stats?.totalTripCost?.toFixed(2) || 0}`} icon="💵" color="#D4AF37" />)}
       </div>
 
       {/* Quick Actions */}
       <div className="card">
         <h2 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '1rem' }}>إجراءات سريعة</h2>
-        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-          <a
-            href="/trips?action=add"
+        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }} className="row-actions quick-actions">
+          <Link
+            to="/trips?action=add"
             className="btn btn-primary"
             style={{ textDecoration: 'none' }}
           >
             <span>➕</span>
             <span>إضافة رحلة جديدة</span>
-          </a>
-          <a
-            href="/payments"
+          </Link>
+          {isAdmin && (<Link
+            to="/payments"
             className="btn btn-secondary"
             style={{ textDecoration: 'none' }}
           >
             <span>💰</span>
             <span>عرض جميع الدفعات</span>
-          </a>
-          <a
-            href="/reports"
+          </Link>)}
+          <Link
+            to="/reports"
             className="btn btn-secondary"
             style={{ textDecoration: 'none' }}
           >
             <span>📈</span>
             <span>عرض التقارير</span>
-          </a>
+          </Link>
         </div>
       </div>
     </div>

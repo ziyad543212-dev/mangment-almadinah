@@ -37,6 +37,8 @@ export interface Pilgrim {
   passport_number: string;
   passport_expiry_date?: string;
   date_of_birth?: string;
+  origin_city?: string | null;
+  destination_city?: string | null;
   gender?: string;
   visa_number?: string | null;
   visa_document_path?: string | null;
@@ -87,10 +89,9 @@ export interface DashboardStats {
   totalTrips: number;
   totalPilgrims: number;
   totalReceived: number;
-  totalOutstanding: number;
-  fullyPaid: number;
-  partiallyPaid: number;
-  unpaid: number;
+  totalTripCost: number;
+  pilgrimsWithPayments: number;
+  pilgrimsWithoutPayments: number;
   upcomingTrips: number;
   previousTrips: number;
 }
